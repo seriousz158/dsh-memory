@@ -19,6 +19,10 @@ if rg -q -- '~?/?\.zcode/memory|DSH_MEMORY_ROOT|memoryRoot|rootPath' "$CLIENT"; 
   print -u2 -- 'dsh-memory-ui must not expose a legacy or browser-selected memory path.'
   exit 1
 fi
-node -e 'const p=require(process.argv[1]); if (p.private === true || p.exports?.["./client"] !== "./lib/client.js" || p.main !== "./lib/index.js") process.exit(1)' "$PACKAGE"
+node -e '
+const p=require(process.argv[1]);
+const peers=["@deepseek-ai/dsh-api-remotes","@deepseek-ai/dsh-client-connection","@deepseek-ai/dsh-client-runtime","@deepseek-ai/dsh-client-ui-settings","react"];
+if (p.private === true || p.exports?.["./client"] !== "./lib/client.js" || p.main !== "./lib/index.js" || peers.some((name) => !p.peerDependencies?.[name])) process.exit(1);
+' "$PACKAGE"
 node --check "$CLIENT"
 print "dsh-memory UI settings row tests passed"

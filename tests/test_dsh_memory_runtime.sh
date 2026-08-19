@@ -27,7 +27,11 @@ if rg -q -- 'git\(\["(rm|restore)' "$HOST"; then
   exit 1
 fi
 
-node -e 'const p=require(process.argv[1]); if (p.private === true || p.exports?.["."] !== "./lib/index.js" || p.type !== "module") process.exit(1)' "$PACKAGE"
+node -e '
+const p=require(process.argv[1]);
+const peers=["@deepseek-ai/dsh-settings","@deepseek-ai/dsh-typert-protocol","@deepseek-ai/schemastery"];
+if (p.private === true || p.exports?.["."] !== "./lib/index.js" || p.type !== "module" || peers.some((name) => !p.peerDependencies?.[name])) process.exit(1);
+' "$PACKAGE"
 node --check "$HOST"
 python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$PROJECT_DIR/packages/dsh-memory/lib/safe-clear.py"
 print "dsh-memory runtime tests passed"
