@@ -13,6 +13,37 @@ It adds one persistent setting, a safe settings-page workflow for clearing memor
 - Refuses unsafe repository layouts, symbolic-link escapes, non-repository roots, and path races during a clear operation.
 - Can process only idle local session logs through an optional headless synchronizer. The synchronizer defaults to `workspace-write`, never silently installs DSH, and forwards only an allowlisted environment.
 
+## v0.2: transactional sync, audit, structured memory, and rollback
+
+v0.2 makes every automatic write transactional:
+
+- The synchronizer copies the payload tree into an isolated staging worktree;
+  headless DSH only ever sees and writes that staging copy.
+- The host verifies the staged diff (paths, read-only reference, live-root
+  concurrency) and applies it to the live memory repository with its own
+  `recovery` + `apply` commit pair. The model never runs Git.
+- Every run is journaled under `.sync/runs/<run-id>.json` with `last-run.json`
+  as the current status; the journal holds metadata only, never transcripts,
+  prompts, or credentials. `.last-sync` advances only after a successful apply.
+- New memory records use Markdown front matter (`schema_version: 1`, `id`,
+  `type`, `status`, `confidence`, dates, tags, `source_rollouts`). Legacy files
+  without front matter keep working, are counted by `status()`, and can be
+  migrated incrementally with `dsh-memory-migrate --dry-run` / `--apply`.
+- The latest journaled sync run can be rolled back as a whole through
+  `memory.rollback()` (with the `ROLLBACK_MEMORY` confirmation) or the settings
+  UI. Rollback creates a new commit; it never resets or rewrites history.
+- `memory.status()` now reports `schemaVersion`, `legacyFileCount`,
+  `pendingMigration`, and `lastRun`; `memory.runs({ limit })` lists the journal.
+
+`dsh-memory-sync --dry-run` reports the candidate diff (added/modified/deleted
+paths, rejected files and reasons) without touching the live root, the journal,
+Git, or the watermark.
+
+The clear operation keeps its existing semantics: it preserves `.sync`,
+`.last-sync`, `README.md`, and `scripts/`, and after a clear the journal still
+exists so an operator can see what happened. Rollback after a clear reports
+`rollback-conflict` because newer memory writes superseded the run.
+
 ## Compatibility
 
 `v0.1.0` declares runtime compatibility with DSH `0.1.0-rc.6` and is tested

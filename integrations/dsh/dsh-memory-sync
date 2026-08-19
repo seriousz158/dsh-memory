@@ -1,13 +1,36 @@
 #!/bin/zsh
-# dsh-memory-sync: incremental, headless memory consolidation.
+# dsh-memory-sync: transactional, headless memory consolidation.
+#
+# v0.2: headless DSH only ever sees an isolated staging worktree. The host
+# verifies the staged diff and applies it to the live memory root with its own
+# Git commits (recovery + apply), records a run journal, and only then advances
+# the .last-sync watermark. A --dry-run flag reports the candidate diff without
+# touching the live root, the journal, or Git.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+REPOSITORY_ROOT="$(cd -- "$SCRIPT_DIR/../.." 2>/dev/null && pwd -P)"
+SYNC_APPLY="${DPSK_MEMORY_SYNC_HELPER:-$REPOSITORY_ROOT/packages/dsh-memory/lib/sync-apply.py}"
 DSH_HOME="${DSH_HOME:-${HOME:?HOME is required}/.dsh}"
 DSH_MEMORY_ROOT="${DSH_MEMORY_ROOT:-$DSH_HOME/storages/memory}"
 MARKER="$DSH_MEMORY_ROOT/.last-sync"
 DSH_BIN="${DSH_BIN:-dsh}"
 DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
+
+DRY_RUN=0
+case "${1:-}" in
+  --dry-run) DRY_RUN=1 ;;
+  "") ;;
+  *) print -u2 -- "dsh-memory-sync: unexpected argument: $1"; exit 2 ;;
+esac
+
+sync_apply() {
+  /usr/bin/env -i \
+    "HOME=${HOME:?HOME is required}" \
+    "PATH=${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+    "TMPDIR=${TMPDIR:-/tmp}" \
+    "$PYTHON_BIN" "$SYNC_APPLY" "$@"
+}
 
 memory_sync_disabled() {
   local settings="$DSH_HOME/settings.yaml"
@@ -78,19 +101,41 @@ if [[ -z "$DSH_EXECUTABLE" || ! -x "$DSH_EXECUTABLE" ]]; then
   exit 127
 fi
 
+[[ -f "$SYNC_APPLY" ]] || { print -u2 -- "dsh-memory-sync: sync helper is missing: $SYNC_APPLY"; exit 127; }
+
+PYTHON_BIN="${DPSK_PYTHON3:-python3}"
+command -v "$PYTHON_BIN" >/dev/null 2>&1 || { print -u2 -- "dsh-memory-sync: python3 is required"; exit 127; }
+
 START_TS=$(date +%s)
+RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-$(/usr/bin/uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-' | cut -c1-8)
+STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-PROMPT="你是 dsh-memory 的定时记忆整合代理，现在执行一次增量同步。重要：本会话自身绝不提取、绝不整合，避免自我循环。
+# --- Transaction setup: an isolated staging worktree + baseline manifest ---
+STAGING_PARENT="${TMPDIR:-/tmp}/dsh-memory-sync-$$"
+STAGING="$STAGING_PARENT/staging"
+MANIFEST="$STAGING_PARENT/manifest.json"
+mkdir -p "$STAGING_PARENT"
+umask 077
 
-记忆仓库：$DSH_MEMORY_ROOT（git 版本化；宪法、提取/整合模板、硬规则见其 README.md，先读它）。
+apply_output="$(sync_apply stage-copy --root "$DSH_MEMORY_ROOT" --staging "$STAGING" --manifest "$MANIFEST")" || {
+  print -u2 -- "dsh-memory-sync: staging copy failed: $apply_output"
+  rm -rf -- "$STAGING_PARENT"
+  exit 1
+}
+
+# Headless DSH writes only to the staging payload. It never sees the live
+# memory root, never runs Git, and never advances the watermark.
+STAGING_PROMPT="你是 dsh-memory 的定时记忆整合代理，现在执行一次增量同步。重要：本会话自身绝不提取、绝不整合，避免自我循环。
+
+你在一个隔离的暂存记忆仓库中工作（$STAGING，git 版本化；宪法、提取/整合模板、硬规则见其 README.md，先读它）。你只能修改 $STAGING 下的 summary.md、handbook/、rollouts/、archive/；禁止修改 $STAGING/README.md，禁止创建其他文件或目录，禁止执行任何 git 命令。
+
 会话日志根：$DSH_HOME/sessions。同步标记：$MARKER（unix 秒时间戳文件）。
 
 步骤：
-1. 若 $MARKER 不存在：只执行 touch $MARKER 并结束（首次运行不回溯历史会话）。
-2. 用 find \"$DSH_HOME/sessions\" -name 'session.jsonl.zstd' -newer \"$MARKER\" ! -newermt '-1 hour' 找出新增且已静默至少 1 小时的日志；逐个执行 python3 $DSH_MEMORY_ROOT/scripts/filter_session.py '<日志路径>' > \"${TMPDIR:-/tmp}/dsh-memory-transcript.md\"，读转录并按 README 的「提取模板」提炼（无高信号则输出 NO_SIGNAL 并跳过该会话）。
-3. 全部提炼完成后，严格按 README 的「整合模板」执行 diff 式整合：与旧条目矛盾的内容覆盖旧条目（绝不叠加）、过时内容降级到 archive/、用户稳定偏好同步进 summary.md。
-4. echo $START_TS > $MARKER
-5. cd $DSH_MEMORY_ROOT && git add -A && git commit -m \"sync: <一句话变更摘要>\"；无实际变更则不提交。
+1. 若 $MARKER 不存在：只输出 NO_SIGNAL 并结束（首次运行不回溯历史会话）。
+2. 用 find \"$DSH_HOME/sessions\" -name 'session.jsonl.zstd' -newer \"$MARKER\" ! -newermt '-1 hour' 找出新增且已静默至少 1 小时的日志；逐个执行 python3 \"$DSH_MEMORY_ROOT/scripts/filter_session.py\" '<日志路径>' > \"${TMPDIR:-/tmp}/dsh-memory-transcript.md\"，读转录并按 README 的「提取模板」提炼（无高信号则输出 NO_SIGNAL 并跳过该会话）。
+3. 全部提炼完成后，严格按 README 的「整合模板」执行 diff 式整合：与旧条目矛盾的内容覆盖旧条目（绝不叠加）、过时内容降级到 $STAGING/archive/、用户稳定偏好同步进 $STAGING/summary.md。
+4. 不要执行 git、不要更新 $MARKER；宿主会负责提交和记录。
 
 收尾用一句话汇报：处理了几个会话、合并了几条记忆。"
 
@@ -115,4 +160,56 @@ for env_name in ${=provider_env_names}; do
   fi
 done
 
-exec /usr/bin/env -i "${CHILD_ENV[@]}" "$DSH_EXECUTABLE" --profile headless "$PROMPT"
+# Run the model inside the staging worktree so its relative writes land there.
+(
+  cd "$STAGING"
+  /usr/bin/env -i "${CHILD_ENV[@]}" "$DSH_EXECUTABLE" --profile headless "$STAGING_PROMPT"
+)
+
+# --- Host-side verification and apply ---
+difference="$(sync_apply diff --staging "$STAGING" --manifest "$MANIFEST")" || {
+  print -u2 -- "dsh-memory-sync: staging diff failed"
+  rm -rf -- "$STAGING_PARENT"
+  exit 1
+}
+
+changed_paths="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["added"]+d["modified"]+d["deleted"])))')"
+
+if [[ -z "$changed_paths" ]]; then
+  echo "dsh-memory-sync: no memory changes, nothing to apply."
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "dsh-memory-sync: dry-run: no changes would be applied."
+  fi
+  rm -rf -- "$STAGING_PARENT"
+  exit 0
+fi
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "dsh-memory-sync: dry-run — would apply: $changed_paths"
+  rm -rf -- "$STAGING_PARENT"
+  exit 0
+fi
+
+apply_result="$(sync_apply apply --root "$DSH_MEMORY_ROOT" --staging "$STAGING" --manifest "$MANIFEST" --run-id "$RUN_ID" --started-at "$STARTED_AT")" || {
+  print -u2 -- "dsh-memory-sync: apply failed: $apply_result"
+  rm -rf -- "$STAGING_PARENT"
+  exit 1
+}
+
+recovery_commit="$(printf '%s' "$apply_result" | /usr/bin/python3 -c 'import json,sys; v=json.load(sys.stdin)["value"]; print(v.get("recovery_commit") or "")')"
+apply_commit="$(printf '%s' "$apply_result" | /usr/bin/python3 -c 'import json,sys; v=json.load(sys.stdin)["value"]; print(v.get("apply_commit") or "")')"
+
+# Journal the run and advance the watermark only after a successful apply.
+sync_apply finalize \
+  --root "$DSH_MEMORY_ROOT" \
+  --run-id "$RUN_ID" \
+  --operation-name sync \
+  --status applied \
+  --started-at "$STARTED_AT" \
+  --changed-paths "$changed_paths" \
+  --recovery-commit "$recovery_commit" \
+  --apply-commit "$apply_commit" \
+  --last-sync "$START_TS" >/dev/null
+
+echo "dsh-memory-sync: applied $changed_paths (recovery $recovery_commit, apply $apply_commit, run $RUN_ID)."
+rm -rf -- "$STAGING_PARENT"

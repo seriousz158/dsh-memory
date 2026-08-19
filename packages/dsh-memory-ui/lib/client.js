@@ -13,11 +13,14 @@ window.__ModuleLoader__.load({
       return transport.ok ? result(transport.value) : transport;
     };
     const enabledRequest = (value) => { if (!value || typeof value !== "object" || typeof value.enabled !== "boolean") throw new Error("invalid memory setting request"); return value; };
+    const rollbackRequest = (value) => { if (!value || value.confirmation !== "ROLLBACK_MEMORY" || typeof value.runId !== "string" || value.runId.length === 0) throw new Error("invalid rollback request"); return value; };
     const remote = { package: "dsh-memory", descriptors: [
       { id: "dsh-memory#memory/getSettings", service: "memory", namespace: "memory", method: "getSettings", invocation: { kind: "direct" }, parameters: [], result: strict(result) },
       { id: "dsh-memory#memory/setEnabled", service: "memory", namespace: "memory", method: "setEnabled", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict(enabledRequest) }], result: strict(result) },
       { id: "dsh-memory#memory/status", service: "memory", namespace: "memory", method: "status", invocation: { kind: "direct" }, parameters: [], result: strict(result) },
       { id: "dsh-memory#memory/clear", service: "memory", namespace: "memory", method: "clear", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict((value) => { if (!value || value.confirmation !== "DELETE_MEMORY") throw new Error("invalid clear request"); return value; }) }], result: strict(result) },
+      { id: "dsh-memory#memory/runs", service: "memory", namespace: "memory", method: "runs", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict((value) => { if (value !== undefined && value !== null && typeof value !== "object") throw new Error("invalid runs request"); return value; }) }], result: strict(result) },
+      { id: "dsh-memory#memory/rollback", service: "memory", namespace: "memory", method: "rollback", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict(rollbackRequest) }], result: strict(result) },
     ] };
     const css = ".dshmu_row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--dsw-alias-border-l2,#eee)}.dshmu_text,.dshmu_clear{min-width:0;display:flex;flex-direction:column;gap:4px}.dshmu_title{font:var(--dsw-font-s-strong-14,14px sans-serif);font-weight:600}.dshmu_desc,.dshmu_status{font:var(--dsw-font-xs-13,12px sans-serif);color:var(--dsw-alias-label-caption,#888)}.dshmu_error{color:var(--dsw-alias-state-danger,#c53b37)}.dshmu_switch{width:38px;height:22px;border-radius:999px;border:0;cursor:pointer;position:relative;background:#ddd}.dshmu_switch[aria-checked=true]{background:var(--dsw-static-deepseek-500,#4d6bfe)}.dshmu_switch:disabled,.dshmu_button:disabled{opacity:.5;cursor:default}.dshmu_knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff}.dshmu_switch[aria-checked=true] .dshmu_knob{left:18px}.dshmu_button{align-self:flex-start;border:0;border-radius:6px;padding:6px 10px;color:#fff;background:var(--dsw-alias-state-danger,#c53b37);cursor:pointer}.dshmu_input{padding:6px;border:1px solid var(--dsw-alias-border-l2,#ddd);border-radius:6px}";
     const tagId = "dsh-memory-ui/style.css";
@@ -74,6 +77,8 @@ window.__ModuleLoader__.load({
             const [busy, setBusy] = react.useState(false);
             const [repository, setRepository] = react.useState(null);
             const [repositoryRevision, setRepositoryRevision] = react.useState(0);
+            const [rollbackState, setRollbackState] = react.useState(null);
+            const [rollbackBusy, setRollbackBusy] = react.useState(false);
             react.useEffect(() => {
               let disposed = false;
               const load = async () => {
@@ -87,6 +92,22 @@ window.__ModuleLoader__.load({
               void load();
               return () => { disposed = true; };
             }, [repositoryRevision]);
+            const rollback = async () => {
+              const runId = repository?.value?.lastRun?.runId;
+              if (!runId) return;
+              if (!window.confirm(`回滚本次同步（${runId}）？变更文件：${(repository.value.lastRun.changedFileCount ?? 0)} 个。此操作会恢复同步前的记忆内容。`)) return;
+              setRollbackBusy(true); setRollbackState(null);
+              try {
+                const answer = operationResult(await memory.rollback({ runId, confirmation: "ROLLBACK_MEMORY" }));
+                if (!answer.ok) return setRollbackState({ error: answer.error.code });
+                setRollbackState({ success: "已回滚本次同步" });
+                setRepositoryRevision((revision) => revision + 1);
+              } catch {
+                setRollbackState({ error: "rollback-failed" });
+              } finally {
+                setRollbackBusy(false);
+              }
+            };
             const clear = async () => {
               if (stage < 2) return setStage(stage + 1);
               setBusy(true); setState(null);
@@ -117,6 +138,12 @@ window.__ModuleLoader__.load({
                 stage === 2 && jsx.jsxs(jsx.Fragment, { children: [jsx.jsx("input", { className: "dshmu_input", "aria-label": "删除记忆确认", value: phrase, onChange: (event) => setPhrase(event.target.value), placeholder: "输入 删除记忆 以确认" }), jsx.jsx("span", { className: "dshmu_status dshmu_error", children: "请输入“删除记忆”后进行最终确认。" })] }),
                 jsx.jsx("button", { type: "button", className: "dshmu_button", disabled: !available || busy || (stage === 2 && phrase !== "删除记忆"), onClick: clear, children: busy ? "正在清空…" : stage === 0 ? "删除记忆" : stage === 1 ? "继续" : "最终确认删除" }),
                 state && jsx.jsx("span", { className: state.error ? "dshmu_status dshmu_error" : "dshmu_status", children: state.error ? `清空失败：${state.error}` : state.success }),
+              ] }),
+              jsx.jsxs("div", { className: "dshmu_clear", children: [
+                jsx.jsx("span", { className: "dshmu_title", children: "最近同步" }),
+                jsx.jsx("span", { className: "dshmu_status", children: repository?.value?.lastRun ? `状态：${repository.value.lastRun.status}；变更 ${repository.value.lastRun.changedFileCount ?? 0} 个文件；apply ${repository.value.lastRun.applyCommit ? repository.value.lastRun.applyCommit.slice(0, 8) : "-"}` : "尚无同步记录" }),
+                (repository?.value?.lastRun && repository.value.lastRun.status === "applied") && jsx.jsx("button", { type: "button", className: "dshmu_button", disabled: !available || rollbackBusy, onClick: rollback, children: rollbackBusy ? "正在回滚…" : "回滚本次同步" }),
+                rollbackState && jsx.jsx("span", { className: rollbackState.error ? "dshmu_status dshmu_error" : "dshmu_status", children: rollbackState.error ? `回滚失败：${rollbackState.error}` : rollbackState.success }),
               ] }),
             ] });
           }

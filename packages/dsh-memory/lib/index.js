@@ -1,7 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir, tmpdir } from "node:os";
-import { copyFile, lstat, mkdtemp, realpath, rmdir, unlink } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rmdir, unlink, writeFile } from "node:fs/promises";
 import { join, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
@@ -41,6 +41,40 @@ let refreshPrompt = () => {};
 
 function failure(code) { return Object.freeze({ ok: false, error: Object.freeze({ code }) }); }
 function success(value) { return Object.freeze({ ok: true, value: Object.freeze(value) }); }
+
+async function readFileSafe(path, encoding) {
+  return await readFile(path, encoding);
+}
+async function writeFileSafe(path, data, options) {
+  return await writeFile(path, data, options);
+}
+async function mkdirSafe(path) {
+  return await mkdir(path, { recursive: true });
+}
+function hasFrontMatter(content) {
+  return content.startsWith("---\n") || content.startsWith("---\r\n");
+}
+
+/** Recursively list files under a payload directory as root-relative paths. */
+async function listPayloadFiles(directory, prefix) {
+  const { readdir } = await import("node:fs/promises");
+  const files = [];
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return files;
+  }
+  for (const entry of entries) {
+    const relative = `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) {
+      files.push(...await listPayloadFiles(join(directory, entry.name), relative));
+    } else if (entry.isFile()) {
+      files.push(relative);
+    }
+  }
+  return files;
+}
 function layoutError() { return Object.assign(new Error("unsafe memory layout"), { memoryCode: "unsafe-layout" }); }
 function clearError() { return Object.assign(new Error("memory layout changed while clearing"), { memoryCode: "clear-failed" }); }
 function memoryError(code) { return Object.assign(new Error("memory operation failed: " + code), { memoryCode: code }); }
@@ -170,8 +204,191 @@ export class MemoryRepository {
       const root = await this.inspect();
       const { dataFileCount } = await safeClear(root, "inspect");
       const targetDirty = (await this.git(["status", "--porcelain", "--", ...TARGETS])).stdout.trim().length > 0;
-      return success({ empty: dataFileCount === 0, dataFileCount, targetDirty, recoverable: true });
+      const { legacyFileCount, pendingMigration } = await this.metadataStats(root);
+      const lastRun = await this.readLastRun(root);
+      return success({
+        empty: dataFileCount === 0,
+        dataFileCount,
+        targetDirty,
+        recoverable: true,
+        schemaVersion: 1,
+        legacyFileCount,
+        pendingMigration,
+        lastRun,
+      });
     } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
+  }
+
+  async metadataStats(root) {
+    let legacyFileCount = 0;
+    try {
+      const files = await this.payloadFiles(root);
+      for (const file of files) {
+        if (file === "summary.md") continue; // navigation file, not a memory record
+        if (!/\.md$/.test(file)) continue;
+        const content = await readFileSafe(join(root, file), "utf8");
+        if (!hasFrontMatter(content)) legacyFileCount += 1;
+      }
+      return { legacyFileCount, pendingMigration: legacyFileCount > 0 };
+    } catch {
+      return { legacyFileCount: 0, pendingMigration: false };
+    }
+  }
+
+  async payloadFiles(root) {
+    const raw = (await this.git(["ls-files", "-z", "--", ...TARGETS])).stdout;
+    return raw.split("\0").filter(Boolean);
+  }
+
+  /** Hash of the payload file paths+modes+blobs at a commit (stable id). */
+  async payloadTree(commit) {
+    const raw = (await this.git(["ls-tree", "-r", "-z", commit, "--", ...TARGETS])).stdout;
+    const entries = raw.split("\0").filter(Boolean).map((entry) => {
+      const tab = entry.indexOf("\t");
+      const [meta, path] = [entry.slice(0, tab), entry.slice(tab + 1)];
+      const [, , object] = meta.split(" ");
+      return `${object} ${path}`;
+    }).sort();
+    return entries.join("\n");
+  }
+
+  /** Git entries (mode/object/path) for the payload of a commit tree. */
+  async treeEntries(commit) {
+    const raw = (await this.git(["ls-tree", "-r", "-z", commit, "--", ...TARGETS])).stdout;
+    return raw.split("\0").filter(Boolean).map((entry) => {
+      const tab = entry.indexOf("\t");
+      const [meta, path] = [entry.slice(0, tab), entry.slice(tab + 1)];
+      const [mode, , object] = meta.split(" ");
+      return { mode, object, path };
+    });
+  }
+
+  async readLastRun(root) {
+    try {
+      const raw = await readFileSafe(join(root, ".sync", "last-run.json"), "utf8");
+      const parsed = JSON.parse(raw);
+      return {
+        runId: parsed.run_id ?? null,
+        status: parsed.status ?? null,
+        changedFileCount: (parsed.changed_paths ?? []).length,
+        applyCommit: parsed.apply_commit ?? null,
+      };
+    } catch { return null; }
+  }
+
+  async runs(request = {}) {
+    const limit = Number.isInteger(request?.limit) && request.limit > 0 ? request.limit : 20;
+    try {
+      const root = await this.inspect();
+      const runIds = (await this.listRunIds(root)).sort().reverse().slice(0, limit);
+      const runs = [];
+      for (const runId of runIds) {
+        const record = await this.readRun(root, runId);
+        if (record) runs.push(record);
+      }
+      return success({ runs });
+    } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
+  }
+
+  async listRunIds(root) {
+    try {
+      const raw = (await this.git(["ls-files", "-z", "--", ".sync/runs"])).stdout;
+      return raw.split("\0").filter(Boolean).map((path) => path.replace(/^\.sync\/runs\//, "").replace(/\.json$/, ""));
+    } catch { return []; }
+  }
+
+  async readRun(root, runId) {
+    try {
+      const raw = await readFileSafe(join(root, ".sync", "runs", `${runId}.json`), "utf8");
+      return JSON.parse(raw);
+    } catch { return null; }
+  }
+
+  async rollback(request) {
+    if (request?.confirmation !== "ROLLBACK_MEMORY") return failure("rollback-invalid-confirmation");
+    if (typeof request?.runId !== "string" || request.runId.length === 0) return failure("rollback-run-not-found");
+    const root = await this.inspect().catch(() => null);
+    if (root === null) return failure("repo-unavailable");
+    const run = await this.readRun(root, request.runId);
+    if (run === null) return failure("rollback-run-not-found");
+    if (run.status !== "applied" || typeof run.recovery_commit !== "string" || typeof run.apply_commit !== "string") return failure("rollback-not-applicable");
+    const head = (await this.git(["rev-parse", "HEAD"])).stdout.trim();
+    // The apply commit must still be the latest payload write. Journal commits
+    // after it only touch .sync, so compare payload trees instead of HEAD.
+    const applyPayload = await this.payloadTree(run.apply_commit);
+    const headPayload = await this.payloadTree(head);
+    if (applyPayload !== headPayload) return failure("rollback-conflict");
+    try {
+      // Rollback restores the payload to the recovery commit's tree, then adds
+      // the rollback journal record on top. The base is the current HEAD so the
+      // rollback commit records a real payload change.
+      const recoveryEntries = await this.treeEntries(run.recovery_commit);
+      const rollbackCommit = await this.buildTargetCommit(head, recoveryEntries, `DPSK memory rollback: ${request.runId}`);
+      if (rollbackCommit === null) return failure("rollback-not-applicable");
+      const liveEntries = (await safeClear(root, "snapshot-live")).entries;
+      await this.replaceCurrentIndex(liveEntries);
+      await this.git(["update-ref", "HEAD", rollbackCommit, head]);
+      // Restore the live payload worktree from the rollback commit. Only the
+      // payload paths are touched; .sync, .last-sync, README, and scripts stay.
+      const payloadPaths = (await this.git(["ls-tree", "-r", "--name-only", "-z", rollbackCommit, "--", ...TARGETS])).stdout.split("\0").filter(Boolean);
+      const payloadSet = new Set(payloadPaths);
+      for (const directory of ["handbook", "rollouts", "archive"]) {
+        await mkdirSafe(join(root, directory));
+      }
+      if (payloadPaths.length > 0) {
+        await this.git(["checkout", rollbackCommit, "--", ...payloadPaths]);
+      }
+      // Remove payload files that exist in the worktree but not in the rollback
+      // tree (they were added by the sync run being rolled back).
+      for (const directory of ["handbook", "rollouts", "archive"]) {
+        const dirRoot = join(root, directory);
+        for (const file of await listPayloadFiles(dirRoot, directory)) {
+          if (!payloadSet.has(file)) {
+            await unlink(join(root, file)).catch(() => {});
+            await this.git(["update-index", "--force-remove", "--", file]).catch(() => {});
+          }
+        }
+      }      const now = new Date().toISOString();
+      const rollbackRecord = {
+        schema_version: 1,
+        run_id: `${now.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")}-rollback`,
+        operation: "rollback",
+        status: "rolled_back",
+        started_at: now,
+        finished_at: now,
+        candidate_sessions: 0,
+        processed_sessions: 0,
+        skipped_sessions: 0,
+        changed_paths: [],
+        recovery_commit: head, // the pre-rollback HEAD (the original apply commit)
+        apply_commit: rollbackCommit,
+        error_code: null,
+      };
+      await this.writeRun(root, rollbackRecord);
+      return success({ rollbackCommit, runId: request.runId });
+    } catch (error) {
+      return failure(error?.memoryCode ?? "rollback-failed");
+    }
+  }
+
+  async writeRun(root, record) {
+    await mkdirSafe(join(root, ".sync", "runs"));
+    const body = JSON.stringify(record, null, 2) + "\n";
+    await writeFileSafe(join(root, ".sync", "runs", `${record.run_id}.json`), body, { mode: 0o600 });
+    const last = {
+      run_id: record.run_id,
+      operation: record.operation,
+      status: record.status,
+      started_at: record.started_at,
+      finished_at: record.finished_at,
+      changed_paths: record.changed_paths ?? [],
+      recovery_commit: record.recovery_commit ?? null,
+      apply_commit: record.apply_commit ?? null,
+      error_code: record.error_code ?? null,
+    };
+    await writeFileSafe(join(root, ".sync", "last-run.json"), JSON.stringify(last, null, 2) + "\n", { mode: 0o600 });
+    await this.git(["add", "--", ".sync"]);
+    await this.git(["commit", "-m", `DPSK memory journal: ${record.run_id}`, "--", ".sync"]);
   }
   async clear(request) {
     if (request?.confirmation !== "DELETE_MEMORY") return failure("clear-failed");
@@ -262,11 +479,15 @@ export class MemoryService extends TypertRemoteService {
   async setEnabled(request) { return await this.settings.setEnabled(request); }
   async status() { return await this.repository.status(); }
   async clear(request) { return await this.repository.clear(request); }
+  async runs(request) { return await this.repository.runs(request); }
+  async rollback(request) { return await this.repository.rollback(request); }
 }
 decorate(MemoryService, "getSettings", Remote("getSettings"));
 decorate(MemoryService, "setEnabled", Remote("setEnabled"));
 decorate(MemoryService, "status", Remote("status"));
 decorate(MemoryService, "clear", Remote("clear"));
+decorate(MemoryService, "runs", Remote("runs"));
+decorate(MemoryService, "rollback", Remote("rollback"));
 
 export function apply(ctx, entry) {
   const settings = new MemorySettingsBridge();
