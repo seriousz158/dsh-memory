@@ -1,0 +1,55 @@
+#!/bin/zsh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+REPOSITORY_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd -P)"
+DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
+MEMORY_ROOT="${DSH_MEMORY_ROOT:-$DSH_HOME/storages/memory}"
+TEMPLATE_ROOT="$REPOSITORY_ROOT/packages/dsh-memory/templates"
+
+die() {
+  print -u2 -- "dsh-memory-init: $*"
+  exit 1
+}
+
+[[ "$DSH_HOME" = /* ]] || die "DSH_HOME must be an absolute path"
+[[ "$MEMORY_ROOT" = /* ]] || die "DSH_MEMORY_ROOT must be an absolute path"
+[[ -d "$TEMPLATE_ROOT" && ! -L "$TEMPLATE_ROOT" ]] || die "memory templates are unavailable"
+[[ -f "$TEMPLATE_ROOT/README.md" && ! -L "$TEMPLATE_ROOT/README.md" ]] || die "memory README template is unavailable"
+[[ -f "$TEMPLATE_ROOT/scripts/filter_session.py" && ! -L "$TEMPLATE_ROOT/scripts/filter_session.py" ]] || die "session filter template is unavailable"
+
+git_bin="$(command -v git)" || die "git is required"
+install_bin="$(command -v install)" || die "install is required"
+umask 077
+
+if [[ -e "$MEMORY_ROOT" || -L "$MEMORY_ROOT" ]]; then
+  [[ -d "$MEMORY_ROOT" && ! -L "$MEMORY_ROOT" ]] || die "refusing a non-directory or symlink memory root"
+  if "$git_bin" -C "$MEMORY_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    root_real="$(cd -- "$MEMORY_ROOT" && pwd -P)"
+    top_path="$("$git_bin" -C "$MEMORY_ROOT" rev-parse --show-toplevel)"
+    top_real="$(cd -- "$top_path" && pwd -P)"
+    [[ "$root_real" == "$top_real" ]] || die "memory root must be the Git worktree root"
+    print -- "$root_real"
+    exit 0
+  fi
+  [[ -z "$(find "$MEMORY_ROOT" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die "refusing to initialize a non-empty non-Git directory"
+else
+  mkdir -p "$MEMORY_ROOT"
+fi
+
+[[ ! -L "$MEMORY_ROOT" ]] || die "refusing a symlink memory root"
+mkdir -p "$MEMORY_ROOT/handbook" "$MEMORY_ROOT/rollouts" "$MEMORY_ROOT/archive" "$MEMORY_ROOT/scripts"
+chmod 700 "$MEMORY_ROOT" "$MEMORY_ROOT/handbook" "$MEMORY_ROOT/rollouts" "$MEMORY_ROOT/archive" "$MEMORY_ROOT/scripts"
+"$install_bin" -m 600 "$TEMPLATE_ROOT/README.md" "$MEMORY_ROOT/README.md"
+"$install_bin" -m 700 "$TEMPLATE_ROOT/scripts/filter_session.py" "$MEMORY_ROOT/scripts/filter_session.py"
+: > "$MEMORY_ROOT/summary.md"
+: > "$MEMORY_ROOT/.last-sync"
+chmod 600 "$MEMORY_ROOT/README.md" "$MEMORY_ROOT/summary.md" "$MEMORY_ROOT/.last-sync"
+
+"$git_bin" -C "$MEMORY_ROOT" init --quiet
+"$git_bin" -C "$MEMORY_ROOT" config user.name "DPSK Memory"
+"$git_bin" -C "$MEMORY_ROOT" config user.email "dpsk-memory@localhost"
+"$git_bin" -C "$MEMORY_ROOT" add README.md summary.md .last-sync scripts/filter_session.py
+"$git_bin" -C "$MEMORY_ROOT" commit --quiet -m "Initialize DPSK memory repository"
+
+print -- "$(cd -- "$MEMORY_ROOT" && pwd -P)"
