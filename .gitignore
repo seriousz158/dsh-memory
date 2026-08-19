@@ -1,0 +1,4 @@
+# Local agent bookkeeping; never ship it in the published repository.
+.superpowers/
+
+# This file is extended with all public-release exclusions in the security slice.
