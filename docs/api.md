@@ -90,6 +90,12 @@ Success when data was cleared:
 
 Success for an already empty repository uses `alreadyEmpty: true`, `clearedFileCount: 0`, and `null` commit values.
 
+For a nonempty repository, `recoveryCommit` is always the recovery point that
+parents `clearCommit`. When the target memory paths are clean, it is the
+existing pre-clear `HEAD` and no redundant checkpoint commit is created. When
+target memory paths are dirty, it is a dedicated checkpoint commit containing
+their live pre-clear contents.
+
 Failures use stable codes:
 
 | Code | Meaning |

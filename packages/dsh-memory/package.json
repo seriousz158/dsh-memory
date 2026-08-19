@@ -1,6 +1,7 @@
 {
   "name": "dsh-memory",
-  "version": "1.0.0",
+  "version": "0.1.0",
+  "private": true,
   "description": "Automatic local long-term memory for DSH",
   "type": "module",
   "exports": {
@@ -8,6 +9,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "LICENSE",
     "lib",
     "templates"
   ],

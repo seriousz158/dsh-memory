@@ -18,7 +18,10 @@ REDACTION = "[REDACTED]"
 
 BEARER_RE = re.compile(r"(?i)\bbearer[ \t]+[A-Za-z0-9._~+/=-]{3,}")
 SK_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{3,}", re.IGNORECASE)
-GITHUB_KEY_RE = re.compile(r"\bgh[pousr]_[A-Za-z0-9]{4,}\b", re.IGNORECASE)
+GITHUB_KEY_RE = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{4,}|github_pat_[A-Za-z0-9_]{20,})\b",
+    re.IGNORECASE,
+)
 AWS_ACCESS_KEY_RE = re.compile(
     r"\b(?:A3T|AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b"
 )

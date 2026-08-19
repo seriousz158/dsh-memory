@@ -190,6 +190,7 @@ export class MemoryRepository {
       recoveryEntries = (await safeClear(root, "snapshot-live")).entries;
       head = (await this.git(["rev-parse", "HEAD"])).stdout.trim();
       recoveryCommit = await this.buildTargetCommit(head, recoveryEntries, "DPSK memory recovery checkpoint");
+      if (recoveryCommit === null) recoveryCommit = head;
     } catch (error) {
       return failure(error?.memoryCode ?? "checkpoint-failed");
     }
@@ -200,7 +201,7 @@ export class MemoryRepository {
       if (!sameEntries(recoveryEntries, stagedEntries)) throw clearError();
       await safeClear(root, "verify");
       const emptyObject = (await this.git(["hash-object", "-w", "/dev/null"])).stdout.trim();
-      clearCommit = await this.buildTargetCommit(recoveryCommit ?? head, [{ path: "summary.md", mode: "100644", object: emptyObject }], "DPSK memory cleared");
+      clearCommit = await this.buildTargetCommit(recoveryCommit, [{ path: "summary.md", mode: "100644", object: emptyObject }], "DPSK memory cleared");
       if (clearCommit === null) throw clearError();
       indexSnapshot = await this.snapshotIndex();
       await this.replaceCurrentIndex([{ path: "summary.md", mode: "100644", object: emptyObject }]);

@@ -8,9 +8,16 @@ The optional synchronizer reads local DSH session logs only to construct a compa
 
 ## Redaction and least privilege
 
-Before handing a transcript to a model, the filter removes common bearer, `sk-`, GitHub-like, AWS-like, query-parameter, and home-directory patterns. It also truncates fields. These controls reduce accidental disclosure, but they are heuristic: do not place secrets in ordinary conversations and do not assume a redactor recognizes every proprietary format.
+Before handing a transcript to a model, the filter removes common bearer, `sk-`, classic GitHub and `github_pat_` token, AWS-like, query-parameter, and home-directory patterns. It also truncates fields. These controls reduce accidental disclosure, but they are heuristic: do not place secrets in ordinary conversations and do not assume a redactor recognizes every proprietary format.
 
-The sync child gets a small environment allowlist. It defaults to `workspace-write`, does not silently download a CLI, and requires explicit selection of any provider credential variable.
+The initializer re-executes itself with a rebuilt, minimal environment. It
+keeps only `HOME`, `PATH`, `TMPDIR`, `LANG`, standard `LC_*` locale values, and
+the explicitly selected `DSH_HOME`/`DSH_MEMORY_ROOT`; it does not forward
+provider credential values. The final DSH sync child also starts from a rebuilt
+environment, defaults to `workspace-write`, does not silently download a CLI,
+and requires explicit selection of any provider credential variable.
+
+The initializer keeps the memory root owner-only and re-applies private modes to a validated existing root. It refuses an incomplete Git repository instead of treating it as usable memory storage.
 
 ## Clear versus secure erase
 

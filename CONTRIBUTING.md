@@ -13,7 +13,7 @@ Thank you for improving `dsh-memory`.
 ## Local checks
 
 ```zsh
-npm ci
+npm ci --ignore-scripts
 npm test
 zsh tools/secret-scan.sh
 ```

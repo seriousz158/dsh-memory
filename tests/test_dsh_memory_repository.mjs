@@ -60,10 +60,12 @@ const repository = async (root) => new MemoryRepository({ root, __testOnly: true
 }
 {
   const root = await fixture();
+  const originalHead = (await git(root, ["rev-parse", "HEAD"])).stdout.trim();
   const result = await (await repository(root)).clear({ confirmation: "DELETE_MEMORY" });
   assert.equal(result.ok, true);
-  assert.equal(result.value.recoveryCommit, null);
+  assert.equal(result.value.recoveryCommit, originalHead);
   assert.match(result.value.clearCommit, /^[0-9a-f]{40}$/);
+  assert.equal((await git(root, ["rev-parse", `${result.value.clearCommit}^`])).stdout.trim(), originalHead);
   assert.equal(result.value.clearedFileCount, 4);
   assert.equal(await readFile(join(root, "summary.md"), "utf8"), "");
   assert.equal((await readFile(join(root, ".last-sync"), "utf8")).trim(), "keep");
@@ -95,10 +97,11 @@ const repository = async (root) => new MemoryRepository({ root, __testOnly: true
 }
 {
   const root = await fixture();
+  const originalHead = (await git(root, ["rev-parse", "HEAD"])).stdout.trim();
   await writeFile(join(root, "outside.md"), "unrelated\n");
   const result = await (await repository(root)).clear({ confirmation: "DELETE_MEMORY" });
   assert.equal(result.ok, true);
-  assert.equal(result.value.recoveryCommit, null);
+  assert.equal(result.value.recoveryCommit, originalHead);
   assert.match((await git(root, ["status", "--porcelain"])).stdout, /outside\.md/);
 }
 {

@@ -8,7 +8,7 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>mkdir -p "$HOME/.local/share/dsh-memory/logs" &amp;&amp; exec "$HOME/.local/share/dsh-memory/integrations/dsh/dsh-memory-sync" &gt;&gt; "$HOME/.local/share/dsh-memory/logs/memory-sync.log" 2&gt;&amp;1</string>
+    <string>mkdir -p "$HOME/.local/share/dsh-memory/logs" &amp;&amp; DSH_HOME="$HOME/.dsh" DSH_MEMORY_ROOT="$HOME/.dsh/storages/memory" exec "$HOME/.local/share/dsh-memory/integrations/dsh/dsh-memory-sync" &gt;&gt; "$HOME/.local/share/dsh-memory/logs/memory-sync.log" 2&gt;&amp;1</string>
   </array>
   <key>StartInterval</key>
   <integer>3600</integer>

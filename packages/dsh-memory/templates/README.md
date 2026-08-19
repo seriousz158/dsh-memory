@@ -8,7 +8,6 @@
 - `handbook/`：可跨会话复用的项目或主题知识。
 - `rollouts/`：单次会话的提炼结果，供后续整合。
 - `archive/`：已过时或被替代的条目。
-<<<<<<< HEAD
 - `scripts/filter_session.py`：将 DSH 会话日志转为精简、脱敏的转录。
 - `.last-sync`：增量同步水位；首次创建时不回溯旧会话。
 

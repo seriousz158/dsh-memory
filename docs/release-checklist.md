@@ -1,7 +1,7 @@
 # Release checklist
 
 Run this checklist from the repository root before creating or updating any
-GitHub release, tag, pull request, or published package.
+GitHub release, tag, or pull request.
 
 ## 1. Confirm the release boundary
 
@@ -26,8 +26,7 @@ All four commands must exit successfully. Inspect the complete `git ls-files`
 output: every path must be intentional public source under the documented
 allowlist.
 
-The secret scan checks both tracked working-tree content and the Git index.
-Resolve every finding; do not weaken or bypass the patterns for a release.
+The secret scan checks both tracked working-tree content and the Git index. The public-tree guard constructs an isolated snapshot from the Git index before reading manifests, workflows, and `npm pack` contents, so stage the intended release files before running it. Resolve every finding; do not weaken or bypass the patterns for a release.
 
 ## 3. Run clean-room tests
 
@@ -40,7 +39,9 @@ a live DSH account, a LaunchAgent, a provider process, or a paid service.
 
 ## 4. Inspect package contents
 
-For each publishable workspace package, inspect the archive before publishing:
+For each packaged workspace artifact, inspect the archive before creating a
+GitHub Release. The workspaces are intentionally private and must not be sent
+to npm:
 
 ```zsh
 npm pack --dry-run --workspace packages/dsh-memory

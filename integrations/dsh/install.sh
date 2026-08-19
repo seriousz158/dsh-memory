@@ -43,11 +43,10 @@ PROFILE_NODE_MODULES="$DSH_HOME_REAL/profiles/node_modules"
 PATCH_FILE="$DSH_HOME_REAL/cordis.patch.yml"
 [[ ! -L "$PATCH_FILE" ]] || die "refusing a symlink cordis.patch.yml"
 
-ensure_package_link() {
+package_real_path() {
   local package_name="$1"
   local package_path="$REPOSITORY_ROOT/packages/$package_name"
   local package_real
-  local link_path="$PROFILE_NODE_MODULES/$package_name"
 
   [[ -f "$package_path/package.json" ]] || die "package is missing: $package_path"
   package_real="$(cd -- "$package_path" && pwd -P)"
@@ -55,6 +54,13 @@ ensure_package_link() {
     "$REPOSITORY_ROOT"/*) ;;
     *) die "refusing package target outside repository: $package_path" ;;
   esac
+  print -r -- "$package_real"
+}
+
+preflight_package_link() {
+  local package_name="$1"
+  local package_real="$(package_real_path "$package_name")"
+  local link_path="$PROFILE_NODE_MODULES/$package_name"
 
   if [[ -L "$link_path" ]]; then
     local raw_target="$(readlink "$link_path")"
@@ -71,94 +77,110 @@ ensure_package_link() {
   fi
 
   [[ ! -e "$link_path" ]] || die "refusing to replace existing path: $link_path"
-  ln -s "$package_real" "$link_path"
 }
 
-ensure_package_link dsh-memory
-ensure_package_link dsh-memory-ui
+typeset -a CREATED_PACKAGE_LINKS
+CREATED_PACKAGE_LINKS=()
 
-node - "$PATCH_FILE" <<'NODE'
+ensure_package_link() {
+  local package_name="$1"
+  local package_real="$(package_real_path "$package_name")"
+  local link_path="$PROFILE_NODE_MODULES/$package_name"
+
+  preflight_package_link "$package_name"
+  [[ -L "$link_path" ]] && return
+  ln -s "$package_real" "$link_path"
+  CREATED_PACKAGE_LINKS+=("$link_path")
+}
+
+preflight_package_link dsh-memory
+preflight_package_link dsh-memory-ui
+
+PATCH_TEMP="$DSH_HOME_REAL/.cordis.patch.yml.tmp-$$-${RANDOM}"
+[[ ! -e "$PATCH_TEMP" && ! -L "$PATCH_TEMP" ]] || die "could not reserve Cordis patch temporary path"
+
+cleanup_install() {
+  local exit_code="$1"
+  local link_path
+
+  if (( exit_code != 0 )); then
+    for link_path in "${CREATED_PACKAGE_LINKS[@]}"; do
+      [[ -L "$link_path" ]] && rm -f -- "$link_path"
+    done
+  fi
+  if [[ -n "${PATCH_TEMP:-}" && ( -e "$PATCH_TEMP" || -L "$PATCH_TEMP" ) ]]; then
+    rm -f -- "$PATCH_TEMP"
+  fi
+  return "$exit_code"
+}
+trap 'cleanup_install $?' EXIT
+
+node - "$PATCH_FILE" "$PATCH_TEMP" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
+const yaml = require("js-yaml");
 
 const patchPath = process.argv[2];
+const temporaryPath = process.argv[3];
 const targets = [
   { id: "memory", name: "dsh-memory" },
   { id: "ui-memory", name: "dsh-memory-ui" },
 ];
 
-function scalar(raw) {
-  const match = raw.match(/^\s*(?:"([^"]*)"|'([^']*)'|([^#\s]+))\s*(?:#.*)?$/);
-  return match ? (match[1] ?? match[2] ?? match[3]) : undefined;
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function leadingWhitespace(line) {
-  return line.match(/^\s*/)[0];
+function rootInsertEntries(document) {
+  return document.flatMap((operation) => (
+    isPlainObject(operation) && Array.isArray(operation.insert) ? operation.insert : []
+  ));
 }
 
-function startsSequenceAt(line, indent) {
-  return line.startsWith(indent) && line.slice(indent.length).match(/^-\s/);
+function validateDocument(document) {
+  if (!Array.isArray(document)) throw new Error("Cordis patch must have a sequence root");
+  for (const operation of document) {
+    if (isPlainObject(operation) && Object.hasOwn(operation, "insert") && !Array.isArray(operation.insert)) {
+      throw new Error("Cordis root insert operation must contain a sequence");
+    }
+  }
+  const entries = rootInsertEntries(document);
+  for (const target of targets) {
+    const matchingIds = entries.filter((entry) => isPlainObject(entry) && entry.id === target.id);
+    if (matchingIds.length > 1) throw new Error(`duplicate Cordis insert id: ${target.id}`);
+    if (matchingIds.length === 1 && matchingIds[0].name !== target.name) {
+      throw new Error(`Cordis insert ${target.id} has unexpected package name`);
+    }
+    const matchingNames = entries.filter((entry) => isPlainObject(entry) && entry.name === target.name);
+    if (matchingNames.some((entry) => entry.id !== target.id)) {
+      throw new Error(`Cordis package ${target.name} is registered under an unexpected id`);
+    }
+  }
+  return entries;
 }
 
-function inspect(lines) {
+function rootInsertBlocks(lines) {
   const blocks = [];
-  const entries = [];
   for (let index = 0; index < lines.length; index += 1) {
-    const insertMatch = lines[index].match(/^(\s*)-\s+insert:\s*(?:#.*)?$/);
-    if (!insertMatch) continue;
-    const blockIndent = insertMatch[1];
+    if (!/^-\s+insert:\s*(?:#.*)?$/.test(lines[index])) continue;
     let end = index + 1;
-    while (end < lines.length && !startsSequenceAt(lines[end], blockIndent)) end += 1;
-    const idCandidates = [];
-    for (let cursor = index + 1; cursor < end; cursor += 1) {
-      const idMatch = lines[cursor].match(/^(\s*)-\s+id:(.*)$/);
-      if (idMatch && idMatch[1].length > blockIndent.length) {
-        idCandidates.push({ cursor, indent: idMatch[1], raw: idMatch[2] });
-      }
-    }
-    const entryIndentLength = idCandidates.length
-      ? Math.min(...idCandidates.map((candidate) => candidate.indent.length))
-      : blockIndent.length + 2;
-    const entryIndent = idCandidates.find((candidate) => candidate.indent.length === entryIndentLength)?.indent
-      ?? `${blockIndent}  `;
-    const block = {
-      start: index,
-      end,
-      blockIndent,
-      entryIndent,
-      propertyIndent: `${entryIndent}  `,
-    };
-    blocks.push(block);
-    const directEntries = idCandidates.filter((candidate) => candidate.indent.length === entryIndentLength);
-    for (let position = 0; position < directEntries.length; position += 1) {
-      const candidate = directEntries[position];
-      const cursor = candidate.cursor;
-      let entryEnd = cursor + 1;
-      const next = directEntries[position + 1];
-      if (next) entryEnd = next.cursor;
-      else entryEnd = end;
-      const id = scalar(candidate.raw);
-      let name;
-      let propertyIndent;
-      const nameCandidates = [];
-      for (let line = cursor + 1; line < entryEnd; line += 1) {
-        const nameMatch = lines[line].match(/^(\s*)name:(.*)$/);
-        if (nameMatch && nameMatch[1].length > entryIndentLength) {
-          nameCandidates.push({ indent: nameMatch[1], raw: nameMatch[2] });
-        }
-      }
-      if (nameCandidates.length > 0) {
-        const propertyIndentLength = Math.min(...nameCandidates.map((candidate) => candidate.indent.length));
-        const directName = nameCandidates.find((candidate) => candidate.indent.length === propertyIndentLength);
-        name = scalar(directName.raw);
-        propertyIndent = directName.indent;
-      }
-      if (propertyIndent) block.propertyIndent = propertyIndent;
-      entries.push({ id, name, start: cursor, end: entryEnd });
-    }
+    while (end < lines.length && !/^-\s+/.test(lines[end])) end += 1;
+    blocks.push({ start: index, end });
     index = end - 1;
   }
-  return { blocks, entries };
+  return blocks;
+}
+
+function insertionIndent(lines, block) {
+  const candidates = [];
+  for (let index = block.start + 1; index < block.end; index += 1) {
+    const match = lines[index].match(/^( +)-\s+/);
+    if (match) candidates.push(match[1]);
+  }
+  if (candidates.length === 0) return "  ";
+  return candidates.reduce((shortest, candidate) => (
+    candidate.length < shortest.length ? candidate : shortest
+  ));
 }
 
 let source;
@@ -172,63 +194,62 @@ try {
 }
 
 const lines = source.split("\n");
-const parsed = inspect(lines);
-for (const target of targets) {
-  const matchingIds = parsed.entries.filter((entry) => entry.id === target.id);
-  if (matchingIds.length > 1) throw new Error(`duplicate Cordis insert id: ${target.id}`);
-  if (matchingIds.length === 1 && matchingIds[0].name !== target.name) {
-    throw new Error(`Cordis insert ${target.id} has unexpected package name`);
+let document;
+try {
+  document = yaml.load(source);
+} catch (error) {
+  throw new Error(`Cordis patch is not valid YAML: ${error.message}`);
+}
+const entries = validateDocument(document);
+const missing = targets.filter((target) => !entries.some((entry) => entry.id === target.id));
+
+let output = source;
+if (missing.length > 0) {
+  const blocks = rootInsertBlocks(lines);
+  const rootInsertCount = document.filter((operation) => isPlainObject(operation) && Object.hasOwn(operation, "insert")).length;
+  if (blocks.length !== rootInsertCount) {
+    throw new Error("Cordis root insert layout is unsupported; use a block-style root insert operation");
   }
-  const matchingNames = parsed.entries.filter((entry) => entry.name === target.name);
-  if (matchingNames.some((entry) => entry.id !== target.id)) {
-    throw new Error(`Cordis package ${target.name} is registered under an unexpected id`);
+  const additionsFor = (entryIndent) => missing.flatMap((target) => [
+    `${entryIndent}- id: ${target.id}`,
+    `${entryIndent}  name: ${target.name}`,
+  ]);
+  if (document.length === 0 && source.trim() === "[]") {
+    const emptyIndex = lines.findIndex((line) => line.trim() === "[]");
+    lines.splice(emptyIndex, 1, "- insert:", ...additionsFor("    "));
+  } else if (blocks.length > 0) {
+    const block = blocks[0];
+    lines.splice(block.end, 0, ...additionsFor(insertionIndent(lines, block)));
+  } else {
+    const insertAt = source.endsWith("\n") ? lines.length - 1 : lines.length;
+    lines.splice(insertAt, 0, "- insert:", ...additionsFor("  "));
   }
+  output = lines.join("\n");
 }
 
-const missing = targets.filter((target) => !parsed.entries.some((entry) => entry.id === target.id));
-if (missing.length === 0) process.exit(0);
-
-const meaningful = lines
-  .map((line, index) => ({ line: line.trim(), index }))
-  .filter(({ line }) => line !== "" && !line.startsWith("#"));
-
-if (meaningful.length === 1 && meaningful[0].line === "[]") {
-  const additions = missing.flatMap((target) => [
-    `    - id: ${target.id}`,
-    `      name: ${target.name}`,
-  ]);
-  lines.splice(meaningful[0].index, 1, "- insert:", ...additions);
-} else if (parsed.blocks.length > 0) {
-  const block = parsed.blocks[0];
-  const additions = missing.flatMap((target) => [
-    `${block.entryIndent}- id: ${target.id}`,
-    `${block.propertyIndent}name: ${target.name}`,
-  ]);
-  lines.splice(block.end, 0, ...additions);
-} else {
-  if (meaningful.some(({ line }) => !line.startsWith("- ") && !line.startsWith("-\t"))) {
-    throw new Error("Cordis patch has an unsupported non-list root layout");
-  }
-  const additions = missing.flatMap((target) => [
-    `    - id: ${target.id}`,
-    `      name: ${target.name}`,
-  ]);
-  const insertAt = source.endsWith("\n") ? lines.length - 1 : lines.length;
-  lines.splice(insertAt, 0, "- insert:", ...additions);
+let verified;
+try {
+  verified = yaml.load(output);
+} catch (error) {
+  throw new Error(`generated Cordis patch is not valid YAML: ${error.message}`);
 }
-
-const output = lines.join("\n");
-const verified = inspect(output.split("\n"));
+const verifiedEntries = validateDocument(verified);
 for (const target of targets) {
-  const matches = verified.entries.filter((entry) => entry.id === target.id && entry.name === target.name);
-  if (matches.length !== 1) throw new Error(`failed to install Cordis entry: ${target.id}`);
+  if (verifiedEntries.filter((entry) => entry.id === target.id && entry.name === target.name).length !== 1) {
+    throw new Error(`failed to install root Cordis entry: ${target.id}`);
+  }
 }
 
 fs.mkdirSync(path.dirname(patchPath), { recursive: true, mode: 0o700 });
-const temporary = `${patchPath}.tmp-${process.pid}-${Date.now()}`;
-fs.writeFileSync(temporary, output, { encoding: "utf8", flag: "wx", mode });
-fs.chmodSync(temporary, mode);
-fs.renameSync(temporary, patchPath);
+fs.writeFileSync(temporaryPath, output, { encoding: "utf8", flag: "wx", mode });
+fs.chmodSync(temporaryPath, mode);
 NODE
+
+DSH_HOME="$DSH_HOME_REAL" "$SCRIPT_DIR/dsh-memory-init" >/dev/null
+ensure_package_link dsh-memory
+ensure_package_link dsh-memory-ui
+mv -f -- "$PATCH_TEMP" "$PATCH_FILE"
+PATCH_TEMP=""
+trap - EXIT
 
 print "Installed dsh-memory and dsh-memory-ui. Restart DSH to load them."

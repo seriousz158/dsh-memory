@@ -16,14 +16,21 @@ const filterScript = join(
 const syntheticSk = ["sk", "test-123"].join("-");
 const syntheticBearer = ["Bearer", "abc"].join(" ");
 const syntheticGitHubToken = ["ghp", "abcdef0123456789abcdef0123456789abcdef"].join("_");
+const syntheticFineGrainedGitHubToken = [
+  "github",
+  "pat",
+  "11AA22BB33CC44DD55EE66FF77GG88HH99II00JJ",
+].join("_");
 const syntheticAwsAccessKey = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
 const querySecret = ["query", "secret"].join("-");
 const nestedPassword = ["nested", "password"].join("-");
+const orderingSk = ["sk", "ordering-123"].join("-");
 const homePath = ["", "Users", "example", "project"].join("/");
 const syntheticSecrets = [
   syntheticSk,
   syntheticBearer,
   syntheticGitHubToken,
+  syntheticFineGrainedGitHubToken,
   syntheticAwsAccessKey,
   querySecret,
   nestedPassword,
@@ -56,7 +63,7 @@ const events = [
         content: [
           {
             type: "text",
-            text: `Keep benign-assistant-text; redact https://example.invalid/cb?token=${querySecret}.`,
+            text: `Keep benign-assistant-text; redact ${syntheticFineGrainedGitHubToken} and https://example.invalid/cb?token=${querySecret}.`,
           },
         ],
       },
@@ -101,7 +108,7 @@ const events = [
           type: "text",
           // If truncation happened first, the visible prefix would end in
           // "sk-o" and no longer match the full key-shape redactor.
-          text: `${"x".repeat(1995)} sk-ordering-123`,
+          text: `${"x".repeat(1995)} ${orderingSk}`,
         },
       ],
     },
