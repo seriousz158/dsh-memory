@@ -4,8 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
 REPOSITORY_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd -P)"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
-PROFILE_NODE_MODULES="$DSH_HOME/profiles/node_modules"
-PATCH_FILE="$DSH_HOME/cordis.patch.yml"
 
 die() {
   print -u2 -- "dsh-memory install: $*"
@@ -14,11 +12,36 @@ die() {
 
 [[ "$DSH_HOME" = /* ]] || die "DSH_HOME must be an absolute path"
 [[ ! -L "$DSH_HOME" ]] || die "refusing a symlink DSH_HOME"
-[[ ! -L "$PATCH_FILE" ]] || die "refusing a symlink cordis.patch.yml"
 command -v node >/dev/null 2>&1 || die "Node.js is required"
 
 umask 077
-mkdir -p "$PROFILE_NODE_MODULES"
+mkdir -p "$DSH_HOME"
+[[ -d "$DSH_HOME" && ! -L "$DSH_HOME" ]] || die "refusing a non-directory or symlink DSH_HOME"
+DSH_HOME_REAL="$(cd -- "$DSH_HOME" && pwd -P)"
+
+ensure_child_directory() {
+  local parent="$1"
+  local child_name="$2"
+  local child="$parent/$child_name"
+  local parent_real
+  local child_real
+
+  [[ -d "$parent" && ! -L "$parent" ]] || die "refusing a non-directory or symlink parent: $parent"
+  if [[ -e "$child" || -L "$child" ]]; then
+    [[ -d "$child" && ! -L "$child" ]] || die "refusing a non-directory or symlink directory: $child"
+  else
+    mkdir "$child"
+  fi
+  parent_real="$(cd -- "$parent" && pwd -P)"
+  child_real="$(cd -- "$child" && pwd -P)"
+  [[ "$child_real" == "$parent_real/$child_name" ]] || die "refusing directory outside DSH_HOME: $child"
+}
+
+ensure_child_directory "$DSH_HOME_REAL" profiles
+ensure_child_directory "$DSH_HOME_REAL/profiles" node_modules
+PROFILE_NODE_MODULES="$DSH_HOME_REAL/profiles/node_modules"
+PATCH_FILE="$DSH_HOME_REAL/cordis.patch.yml"
+[[ ! -L "$PATCH_FILE" ]] || die "refusing a symlink cordis.patch.yml"
 
 ensure_package_link() {
   local package_name="$1"
@@ -69,31 +92,69 @@ function scalar(raw) {
   return match ? (match[1] ?? match[2] ?? match[3]) : undefined;
 }
 
+function leadingWhitespace(line) {
+  return line.match(/^\s*/)[0];
+}
+
+function startsSequenceAt(line, indent) {
+  return line.startsWith(indent) && line.slice(indent.length).match(/^-\s/);
+}
+
 function inspect(lines) {
   const blocks = [];
   const entries = [];
   for (let index = 0; index < lines.length; index += 1) {
-    if (!/^- insert:\s*(?:#.*)?$/.test(lines[index])) continue;
+    const insertMatch = lines[index].match(/^(\s*)-\s+insert:\s*(?:#.*)?$/);
+    if (!insertMatch) continue;
+    const blockIndent = insertMatch[1];
     let end = index + 1;
-    while (end < lines.length && !/^-\s/.test(lines[end])) end += 1;
-    const block = { start: index, end };
-    blocks.push(block);
+    while (end < lines.length && !startsSequenceAt(lines[end], blockIndent)) end += 1;
+    const idCandidates = [];
     for (let cursor = index + 1; cursor < end; cursor += 1) {
-      const idMatch = lines[cursor].match(/^ {4}- id:(.*)$/);
-      if (!idMatch) continue;
+      const idMatch = lines[cursor].match(/^(\s*)-\s+id:(.*)$/);
+      if (idMatch && idMatch[1].length > blockIndent.length) {
+        idCandidates.push({ cursor, indent: idMatch[1], raw: idMatch[2] });
+      }
+    }
+    const entryIndentLength = idCandidates.length
+      ? Math.min(...idCandidates.map((candidate) => candidate.indent.length))
+      : blockIndent.length + 2;
+    const entryIndent = idCandidates.find((candidate) => candidate.indent.length === entryIndentLength)?.indent
+      ?? `${blockIndent}  `;
+    const block = {
+      start: index,
+      end,
+      blockIndent,
+      entryIndent,
+      propertyIndent: `${entryIndent}  `,
+    };
+    blocks.push(block);
+    const directEntries = idCandidates.filter((candidate) => candidate.indent.length === entryIndentLength);
+    for (let position = 0; position < directEntries.length; position += 1) {
+      const candidate = directEntries[position];
+      const cursor = candidate.cursor;
       let entryEnd = cursor + 1;
-      while (entryEnd < end && !/^ {4}-\s/.test(lines[entryEnd])) entryEnd += 1;
-      const id = scalar(idMatch[1]);
+      const next = directEntries[position + 1];
+      if (next) entryEnd = next.cursor;
+      else entryEnd = end;
+      const id = scalar(candidate.raw);
       let name;
+      let propertyIndent;
+      const nameCandidates = [];
       for (let line = cursor + 1; line < entryEnd; line += 1) {
-        const nameMatch = lines[line].match(/^ {6}name:(.*)$/);
-        if (nameMatch) {
-          name = scalar(nameMatch[1]);
-          break;
+        const nameMatch = lines[line].match(/^(\s*)name:(.*)$/);
+        if (nameMatch && nameMatch[1].length > entryIndentLength) {
+          nameCandidates.push({ indent: nameMatch[1], raw: nameMatch[2] });
         }
       }
+      if (nameCandidates.length > 0) {
+        const propertyIndentLength = Math.min(...nameCandidates.map((candidate) => candidate.indent.length));
+        const directName = nameCandidates.find((candidate) => candidate.indent.length === propertyIndentLength);
+        name = scalar(directName.raw);
+        propertyIndent = directName.indent;
+      }
+      if (propertyIndent) block.propertyIndent = propertyIndent;
       entries.push({ id, name, start: cursor, end: entryEnd });
-      cursor = entryEnd - 1;
     }
     index = end - 1;
   }
@@ -127,19 +188,31 @@ for (const target of targets) {
 const missing = targets.filter((target) => !parsed.entries.some((entry) => entry.id === target.id));
 if (missing.length === 0) process.exit(0);
 
-const additions = missing.flatMap((target) => [
-  `    - id: ${target.id}`,
-  `      name: ${target.name}`,
-]);
 const meaningful = lines
   .map((line, index) => ({ line: line.trim(), index }))
   .filter(({ line }) => line !== "" && !line.startsWith("#"));
 
 if (meaningful.length === 1 && meaningful[0].line === "[]") {
+  const additions = missing.flatMap((target) => [
+    `    - id: ${target.id}`,
+    `      name: ${target.name}`,
+  ]);
   lines.splice(meaningful[0].index, 1, "- insert:", ...additions);
 } else if (parsed.blocks.length > 0) {
-  lines.splice(parsed.blocks[0].end, 0, ...additions);
+  const block = parsed.blocks[0];
+  const additions = missing.flatMap((target) => [
+    `${block.entryIndent}- id: ${target.id}`,
+    `${block.propertyIndent}name: ${target.name}`,
+  ]);
+  lines.splice(block.end, 0, ...additions);
 } else {
+  if (meaningful.some(({ line }) => !line.startsWith("- ") && !line.startsWith("-\t"))) {
+    throw new Error("Cordis patch has an unsupported non-list root layout");
+  }
+  const additions = missing.flatMap((target) => [
+    `    - id: ${target.id}`,
+    `      name: ${target.name}`,
+  ]);
   const insertAt = source.endsWith("\n") ? lines.length - 1 : lines.length;
   lines.splice(insertAt, 0, "- insert:", ...additions);
 }

@@ -36,7 +36,28 @@ if [[ ! -x "$INITIALIZER" ]]; then
   print -u2 -- "dsh-memory-sync: initializer is not executable: $INITIALIZER"
   exit 127
 fi
-DSH_HOME="$DSH_HOME" DSH_MEMORY_ROOT="$DSH_MEMORY_ROOT" "$INITIALIZER" >/dev/null
+
+# Build a small, credential-free base environment before invoking any child.
+# The initializer only needs local filesystem and Git access; provider values
+# are intentionally unavailable until the final DSH process is started.
+typeset -a BASE_ENV
+BASE_ENV=(
+  "HOME=${HOME:?HOME is required}"
+  "DSH_HOME=$DSH_HOME"
+  "DSH_MEMORY_ROOT=$DSH_MEMORY_ROOT"
+  "PATH=${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+  "TMPDIR=${TMPDIR:-/tmp}"
+  "LANG=${LANG:-C}"
+)
+
+typeset env_name
+for env_name in ${(k)parameters}; do
+  if [[ "$env_name" == LC_* && "${parameters[$env_name]}" == *export* ]]; then
+    BASE_ENV+=("$env_name=${(P)env_name}")
+  fi
+done
+
+/usr/bin/env -i "${BASE_ENV[@]}" "$INITIALIZER" >/dev/null
 
 # Zero-cost guard: nothing new since the last sync exits before any DSH run.
 if [[ -f "$MARKER" ]]; then
@@ -78,22 +99,10 @@ PROMPT="你是 dsh-memory 的定时记忆整合代理，现在执行一次增量
 # printed, or copied into the prompt by this wrapper.
 typeset -a CHILD_ENV
 CHILD_ENV=(
-  "HOME=${HOME:?HOME is required}"
-  "DSH_HOME=$DSH_HOME"
-  "DSH_MEMORY_ROOT=$DSH_MEMORY_ROOT"
-  "PATH=${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
-  "TMPDIR=${TMPDIR:-/tmp}"
-  "LANG=${LANG:-C}"
+  "${BASE_ENV[@]}"
   "DSH_PERMISSION_MODE=$DSH_PERMISSION_MODE"
   "DSH_TELEMETRY_DISABLED=1"
 )
-
-typeset env_name
-for env_name in ${(k)parameters}; do
-  if [[ "$env_name" == LC_* && "${parameters[$env_name]}" == *export* ]]; then
-    CHILD_ENV+=("$env_name=${(P)env_name}")
-  fi
-done
 
 typeset provider_env_names="${DSH_MEMORY_PROVIDER_ENV_NAMES:-}"
 for env_name in ${=provider_env_names}; do

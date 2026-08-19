@@ -19,6 +19,7 @@ cat > "$TEST_INTEGRATION/dsh-memory-init" <<'EOF'
 #!/bin/zsh
 set -euo pipefail
 mkdir -p "${DSH_MEMORY_ROOT:?}"
+/usr/bin/env | /usr/bin/sed 's/=.*//' | /usr/bin/sort > "$DSH_MEMORY_ROOT/initializer-env-names.txt"
 EOF
 chmod +x "$TEST_INTEGRATION/dsh-memory-init"
 
@@ -54,6 +55,24 @@ for allowed_name in \
     print -u2 -- "expected child environment name missing: $allowed_name"
     exit 1
   }
+done
+
+INITIALIZER_ENV_NAMES="$TEST_MEMORY_ROOT/initializer-env-names.txt"
+for allowed_name in HOME DSH_HOME DSH_MEMORY_ROOT PATH TMPDIR LANG LC_SYNTHETIC; do
+  grep -qx -- "$allowed_name" "$INITIALIZER_ENV_NAMES" || {
+    print -u2 -- "expected initializer environment name missing: $allowed_name"
+    exit 1
+  }
+done
+
+for forbidden_name in \
+  DSH_BIN DSH_MEMORY_PROVIDER_ENV_NAMES DSH_PERMISSION_MODE DSH_TELEMETRY_DISABLED \
+  ALLOWED_PROVIDER_TOKEN OPENAI_API_KEY ANTHROPIC_API_KEY CODEX_AUTH_TOKEN \
+  MCP_SYNTHETIC_TOKEN UNRELATED_CREDENTIAL; do
+  if grep -qx -- "$forbidden_name" "$INITIALIZER_ENV_NAMES"; then
+    print -u2 -- "unexpected initializer environment name inherited: $forbidden_name"
+    exit 1
+  fi
 done
 
 for forbidden_name in \

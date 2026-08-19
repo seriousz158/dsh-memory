@@ -12,9 +12,7 @@ OVERRIDE_ROOT="$TEST_ROOT/override-memory"
 mkdir -p "$FIXTURE_REPO/integrations/dsh" "$FIXTURE_REPO/packages/dsh-memory/templates/scripts"
 /usr/bin/install -m 700 "$PROJECT_DIR/integrations/dsh/dsh-memory-init" "$INITIALIZER"
 /usr/bin/install -m 600 "$PROJECT_DIR/packages/dsh-memory/templates/README.md" "$FIXTURE_REPO/packages/dsh-memory/templates/README.md"
-print '#!/usr/bin/env python3' > "$FIXTURE_REPO/packages/dsh-memory/templates/scripts/filter_session.py"
-print 'print("fixture")' >> "$FIXTURE_REPO/packages/dsh-memory/templates/scripts/filter_session.py"
-chmod 700 "$FIXTURE_REPO/packages/dsh-memory/templates/scripts/filter_session.py"
+/usr/bin/install -m 700 "$PROJECT_DIR/packages/dsh-memory/templates/scripts/filter_session.py" "$FIXTURE_REPO/packages/dsh-memory/templates/scripts/filter_session.py"
 
 DSH_HOME="$TEST_DSH_HOME" "$INITIALIZER" >/dev/null
 
@@ -56,6 +54,14 @@ fi
 ln -s "$TEST_ROOT" "$TEST_ROOT/symlink-memory"
 if DSH_MEMORY_ROOT="$TEST_ROOT/symlink-memory" "$INITIALIZER" >/dev/null 2>&1; then
   print -u2 -- "initializer accepted a symlink memory root"
+  exit 1
+fi
+
+INCOMPLETE_REPOSITORY="$TEST_ROOT/incomplete-repository"
+mkdir -p "$INCOMPLETE_REPOSITORY"
+git -C "$INCOMPLETE_REPOSITORY" init --quiet
+if DSH_MEMORY_ROOT="$INCOMPLETE_REPOSITORY" "$INITIALIZER" >/dev/null 2>&1; then
+  print -u2 -- "initializer accepted an incomplete Git repository"
   exit 1
 fi
 

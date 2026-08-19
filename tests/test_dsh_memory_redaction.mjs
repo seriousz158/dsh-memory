@@ -13,21 +13,28 @@ const filterScript = join(
   "filter_session.py",
 );
 
+const syntheticSk = ["sk", "test-123"].join("-");
+const syntheticBearer = ["Bearer", "abc"].join(" ");
+const syntheticGitHubToken = ["ghp", "abcdef0123456789abcdef0123456789abcdef"].join("_");
+const syntheticAwsAccessKey = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
+const querySecret = ["query", "secret"].join("-");
+const nestedPassword = ["nested", "password"].join("-");
+const homePath = ["", "Users", "example", "project"].join("/");
 const syntheticSecrets = [
-  "sk-test-123",
-  "Bearer abc",
-  "ghp_test",
-  "AKIAIOSFODNN7EXAMPLE",
-  "query-secret",
-  "nested-password",
-  "/Users/example/project",
+  syntheticSk,
+  syntheticBearer,
+  syntheticGitHubToken,
+  syntheticAwsAccessKey,
+  querySecret,
+  nestedPassword,
+  homePath,
 ];
 
 const events = [
   {
     type: "session",
     id: "synthetic-session",
-    cwd: "/Users/example/project",
+    cwd: homePath,
     agentPreset: "test",
   },
   { type: "turn/start", data: { turn: 1 } },
@@ -37,7 +44,7 @@ const events = [
       content: [
         {
           type: "text",
-          text: "Keep benign-user-text; redact sk-test-123 and Bearer abc.",
+          text: `Keep benign-user-text; redact ${syntheticSk} and ${syntheticBearer}.`,
         },
       ],
     },
@@ -49,7 +56,7 @@ const events = [
         content: [
           {
             type: "text",
-            text: "Keep benign-assistant-text; redact https://example.invalid/cb?token=query-secret.",
+            text: `Keep benign-assistant-text; redact https://example.invalid/cb?token=${querySecret}.`,
           },
         ],
       },
@@ -60,10 +67,10 @@ const events = [
     data: {
       name: "synthetic_tool",
       arguments: JSON.stringify({
-        token: "ghp_test",
+        note: syntheticGitHubToken,
         nested: {
-          password: "nested-password",
-          path: "/Users/example/project/tool",
+          password: nestedPassword,
+          path: `${homePath}/tool`,
         },
       }),
     },
@@ -77,7 +84,7 @@ const events = [
             content: [
               {
                 type: "text",
-                text: "Keep benign-result-text; redact AKIAIOSFODNN7EXAMPLE.",
+            text: `Keep benign-result-text; redact ${syntheticAwsAccessKey}.`,
               },
             ],
           },

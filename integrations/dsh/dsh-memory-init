@@ -22,6 +22,20 @@ git_bin="$(command -v git)" || die "git is required"
 install_bin="$(command -v install)" || die "install is required"
 umask 077
 
+validate_initialized_repository() {
+  local required_path
+  local required_directory
+
+  "$git_bin" -C "$MEMORY_ROOT" rev-parse --verify HEAD >/dev/null 2>&1 || return 1
+  for required_path in README.md summary.md .last-sync scripts/filter_session.py; do
+    [[ -f "$MEMORY_ROOT/$required_path" && ! -L "$MEMORY_ROOT/$required_path" ]] || return 1
+  done
+  for required_directory in handbook rollouts archive scripts; do
+    [[ -d "$MEMORY_ROOT/$required_directory" && ! -L "$MEMORY_ROOT/$required_directory" ]] || return 1
+  done
+  [[ -x "$MEMORY_ROOT/scripts/filter_session.py" ]] || return 1
+}
+
 if [[ -e "$MEMORY_ROOT" || -L "$MEMORY_ROOT" ]]; then
   [[ -d "$MEMORY_ROOT" && ! -L "$MEMORY_ROOT" ]] || die "refusing a non-directory or symlink memory root"
   if "$git_bin" -C "$MEMORY_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -29,6 +43,7 @@ if [[ -e "$MEMORY_ROOT" || -L "$MEMORY_ROOT" ]]; then
     top_path="$("$git_bin" -C "$MEMORY_ROOT" rev-parse --show-toplevel)"
     top_real="$(cd -- "$top_path" && pwd -P)"
     [[ "$root_real" == "$top_real" ]] || die "memory root must be the Git worktree root"
+    validate_initialized_repository || die "memory root is an incomplete DSH memory repository"
     print -- "$root_real"
     exit 0
   fi

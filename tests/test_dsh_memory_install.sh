@@ -64,6 +64,23 @@ DSH_HOME="$EMPTY_HOME" "$INSTALLER" >/dev/null
 grep -Fq -- 'id: memory' "$EMPTY_HOME/cordis.patch.yml"
 grep -Fq -- 'id: ui-memory' "$EMPTY_HOME/cordis.patch.yml"
 
+TWO_SPACE_HOME="$TEST_ROOT/two-space-home/.dsh"
+mkdir -p "$TWO_SPACE_HOME"
+cat > "$TWO_SPACE_HOME/cordis.patch.yml" <<'YAML'
+- insert:
+  - id: other
+    name: other-package
+YAML
+DSH_HOME="$TWO_SPACE_HOME" "$INSTALLER" >/dev/null
+test "$(grep -c -- '^  - id: memory$' "$TWO_SPACE_HOME/cordis.patch.yml")" = "1"
+test "$(grep -c -- '^  - id: ui-memory$' "$TWO_SPACE_HOME/cordis.patch.yml")" = "1"
+test "$(grep -c -- '^    name: dsh-memory$' "$TWO_SPACE_HOME/cordis.patch.yml")" = "1"
+test "$(grep -c -- '^    name: dsh-memory-ui$' "$TWO_SPACE_HOME/cordis.patch.yml")" = "1"
+if grep -q -- '^    - id: memory$' "$TWO_SPACE_HOME/cordis.patch.yml"; then
+  print -u2 -- 'installer changed a two-space Cordis insert list to a mixed indentation layout'
+  exit 1
+fi
+
 UNSAFE_HOME="$TEST_ROOT/unsafe-home/.dsh"
 mkdir -p "$UNSAFE_HOME/profiles/node_modules"
 ln -s "$TEST_ROOT" "$UNSAFE_HOME/profiles/node_modules/dsh-memory"
@@ -73,6 +90,17 @@ if DSH_HOME="$UNSAFE_HOME" "$INSTALLER" >/dev/null 2>&1; then
 fi
 TEST_ROOT_REAL="$(cd -P -- "$TEST_ROOT" && pwd -P)"
 test "$(cd -P -- "$UNSAFE_HOME/profiles/node_modules/dsh-memory" && pwd -P)" = "$TEST_ROOT_REAL"
+
+PARENT_SYMLINK_HOME="$TEST_ROOT/parent-symlink-home/.dsh"
+PARENT_SYMLINK_TARGET="$TEST_ROOT/outside-profiles"
+mkdir -p "$PARENT_SYMLINK_HOME" "$PARENT_SYMLINK_TARGET"
+ln -s "$PARENT_SYMLINK_TARGET" "$PARENT_SYMLINK_HOME/profiles"
+if DSH_HOME="$PARENT_SYMLINK_HOME" "$INSTALLER" >/dev/null 2>&1; then
+  print -u2 -- 'installer followed a profiles parent symlink outside DSH_HOME'
+  exit 1
+fi
+test ! -e "$PARENT_SYMLINK_TARGET/node_modules/dsh-memory"
+test ! -e "$PARENT_SYMLINK_TARGET/node_modules/dsh-memory-ui"
 
 plutil -lint "$PLIST" >/dev/null
 grep -Fq -- '<string>dev.dsh.memory-sync</string>' "$PLIST"
