@@ -1,0 +1,109 @@
+#!/bin/zsh
+# dsh-memory-sync: incremental, headless memory consolidation.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+DSH_HOME="${DSH_HOME:-${HOME:?HOME is required}/.dsh}"
+DSH_MEMORY_ROOT="${DSH_MEMORY_ROOT:-$DSH_HOME/storages/memory}"
+MARKER="$DSH_MEMORY_ROOT/.last-sync"
+DSH_BIN="${DSH_BIN:-dsh}"
+DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
+
+memory_sync_disabled() {
+  local settings="$DSH_HOME/settings.yaml"
+  [[ -f "$settings" ]] || return 1
+  /usr/bin/awk '
+    BEGIN { disabled = 0; in_memory = 0 }
+    /^memory:[[:space:]]*(#.*)?$/ { in_memory = 1; next }
+    in_memory && /^[^[:space:]#]/ { in_memory = 0 }
+    in_memory && /^[[:space:]]*enabled:[[:space:]]*false([[:space:]]*(#.*)?$)/ {
+      disabled = 1
+      exit
+    }
+    END { exit disabled ? 0 : 1 }
+  ' "$settings"
+}
+
+# A disabled setting is a zero-side-effect stop: do not initialize storage,
+# scan sessions, touch the marker, construct a prompt, or start DSH.
+if memory_sync_disabled; then
+  echo "dsh-memory-sync: memory.enabled is false; skipping sync."
+  exit 0
+fi
+
+INITIALIZER="$SCRIPT_DIR/dsh-memory-init"
+if [[ ! -x "$INITIALIZER" ]]; then
+  print -u2 -- "dsh-memory-sync: initializer is not executable: $INITIALIZER"
+  exit 127
+fi
+DSH_HOME="$DSH_HOME" DSH_MEMORY_ROOT="$DSH_MEMORY_ROOT" "$INITIALIZER" >/dev/null
+
+# Zero-cost guard: nothing new since the last sync exits before any DSH run.
+if [[ -f "$MARKER" ]]; then
+  NEW=$(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$MARKER" ! -newermt '-1 hour' 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$NEW" == "0" ]]; then
+    echo "dsh-memory-sync: no new idle session logs since $(stat -f '%Sm' "$MARKER"), nothing to do."
+    exit 0
+  fi
+  echo "dsh-memory-sync: $NEW new idle session log(s), starting headless consolidation…"
+else
+  echo "dsh-memory-sync: first run — marker will be created, historical sessions skipped."
+fi
+
+DSH_EXECUTABLE="$(command -v -- "$DSH_BIN" 2>/dev/null || true)"
+if [[ -z "$DSH_EXECUTABLE" || ! -x "$DSH_EXECUTABLE" ]]; then
+  print -u2 -- "dsh-memory-sync: DSH executable not found or not executable: $DSH_BIN"
+  print -u2 -- "dsh-memory-sync: install DSH separately or set DSH_BIN to an executable path."
+  exit 127
+fi
+
+START_TS=$(date +%s)
+
+PROMPT="你是 dsh-memory 的定时记忆整合代理，现在执行一次增量同步。重要：本会话自身绝不提取、绝不整合，避免自我循环。
+
+记忆仓库：$DSH_MEMORY_ROOT（git 版本化；宪法、提取/整合模板、硬规则见其 README.md，先读它）。
+会话日志根：$DSH_HOME/sessions。同步标记：$MARKER（unix 秒时间戳文件）。
+
+步骤：
+1. 若 $MARKER 不存在：只执行 touch $MARKER 并结束（首次运行不回溯历史会话）。
+2. 用 find \"$DSH_HOME/sessions\" -name 'session.jsonl.zstd' -newer \"$MARKER\" ! -newermt '-1 hour' 找出新增且已静默至少 1 小时的日志；逐个执行 python3 $DSH_MEMORY_ROOT/scripts/filter_session.py '<日志路径>' > \"${TMPDIR:-/tmp}/dsh-memory-transcript.md\"，读转录并按 README 的「提取模板」提炼（无高信号则输出 NO_SIGNAL 并跳过该会话）。
+3. 全部提炼完成后，严格按 README 的「整合模板」执行 diff 式整合：与旧条目矛盾的内容覆盖旧条目（绝不叠加）、过时内容降级到 archive/、用户稳定偏好同步进 summary.md。
+4. echo $START_TS > $MARKER
+5. cd $DSH_MEMORY_ROOT && git add -A && git commit -m \"sync: <一句话变更摘要>\"；无实际变更则不提交。
+
+收尾用一句话汇报：处理了几个会话、合并了几条记忆。"
+
+# Start from an empty environment and rebuild only the operational minimum.
+# Provider credentials are opt-in by variable name; values are never parsed,
+# printed, or copied into the prompt by this wrapper.
+typeset -a CHILD_ENV
+CHILD_ENV=(
+  "HOME=${HOME:?HOME is required}"
+  "DSH_HOME=$DSH_HOME"
+  "DSH_MEMORY_ROOT=$DSH_MEMORY_ROOT"
+  "PATH=${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+  "TMPDIR=${TMPDIR:-/tmp}"
+  "LANG=${LANG:-C}"
+  "DSH_PERMISSION_MODE=$DSH_PERMISSION_MODE"
+  "DSH_TELEMETRY_DISABLED=1"
+)
+
+typeset env_name
+for env_name in ${(k)parameters}; do
+  if [[ "$env_name" == LC_* && "${parameters[$env_name]}" == *export* ]]; then
+    CHILD_ENV+=("$env_name=${(P)env_name}")
+  fi
+done
+
+typeset provider_env_names="${DSH_MEMORY_PROVIDER_ENV_NAMES:-}"
+for env_name in ${=provider_env_names}; do
+  if [[ ! "$env_name" =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]]; then
+    print -u2 -- "dsh-memory-sync: invalid provider environment variable name: $env_name"
+    exit 2
+  fi
+  if [[ -v "$env_name" ]]; then
+    CHILD_ENV+=("$env_name=${(P)env_name}")
+  fi
+done
+
+exec /usr/bin/env -i "${CHILD_ENV[@]}" "$DSH_EXECUTABLE" --profile headless "$PROMPT"
