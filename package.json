@@ -19,8 +19,8 @@
     "@deepseek-ai/dsh-settings": "0.1.0-rc.7",
     "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.7",
     "@deepseek-ai/schemastery": "3.18.1",
-    "js-yaml": "4.3.1",
-    "react": "19.2.8"
+    "js-yaml": "5.3.0",
+    "react": "18.3.1"
   },
   "scripts": {
     "scan:secrets": "zsh tools/secret-scan.sh",
