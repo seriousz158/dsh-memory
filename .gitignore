@@ -1,4 +1,20 @@
 # Local agent bookkeeping; never ship it in the published repository.
 .superpowers/
 
-# This file is extended with all public-release exclusions in the security slice.
+# Local DSH state and browser automation data.
+.dsh/
+.playwright-cli/
+.credentials*
+
+# Environment and credential-bearing configuration.
+.env
+.env.*
+!.env.example
+
+# Generated archives, logs, caches, and dependencies.
+*.zstd
+*.log
+__pycache__/
+*.py[cod]
+.DS_Store
+node_modules/
