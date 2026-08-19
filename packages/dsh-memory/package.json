@@ -10,7 +10,8 @@
   },
   "files": [
     "LICENSE",
-    "lib",
+    "lib/*.js",
+    "lib/*.py",
     "templates"
   ],
   "repository": {

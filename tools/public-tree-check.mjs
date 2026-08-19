@@ -47,6 +47,7 @@ const allowed = new Set([
   "integrations/dsh/dsh-memory-sync.plist.example",
   "integrations/dsh/install.sh",
   "packages/dsh-memory/package.json",
+  "packages/dsh-memory/.npmignore",
   "packages/dsh-memory/LICENSE",
   "packages/dsh-memory/lib/index.js",
   "packages/dsh-memory/lib/memory-metadata.js",
