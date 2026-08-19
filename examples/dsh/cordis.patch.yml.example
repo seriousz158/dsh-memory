@@ -1,0 +1,5 @@
+- insert:
+    - id: memory
+      name: dsh-memory
+    - id: ui-memory
+      name: dsh-memory-ui
