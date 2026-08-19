@@ -1,0 +1,28 @@
+name: Feature request
+description: Propose a focused improvement.
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem should this solve?
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Affected boundary
+      options:
+        - label: Host API or settings contract
+        - label: Web settings UI
+        - label: Memory storage layout or Git recovery semantics
+        - label: Security, privacy, paths, or permissions
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the smallest useful behavior change.
+    validations:
+      required: true

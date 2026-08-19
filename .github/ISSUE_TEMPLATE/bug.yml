@@ -1,0 +1,29 @@
+name: Bug report
+description: Report a reproducible dsh-memory problem without private data.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach real memory, session archives, credentials, browser profiles, or unredacted transcripts.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: dsh-memory, DSH, Node.js, Python, and macOS versions.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal synthetic reproduction
+      description: Use a temporary directory and placeholder values only.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual result
+    validations:
+      required: true
