@@ -19,8 +19,11 @@ cp "$PROJECT_DIR/packages/dsh-memory/lib/sync-apply.py" "$TEST_INTEGRATION/sync-
 
 # Initialize a real memory repository so stage-copy and apply have a live root.
 DSH_HOME="$TEST_DSH_HOME" DSH_MEMORY_ROOT="$TEST_MEMORY_ROOT" "$INITIALIZER" >/dev/null
-# Force the first-run path: no marker means the sync proceeds to DSH directly.
-rm -f "$TEST_MEMORY_ROOT/.last-sync"
+# Exercise the incremental path with one session that is newer than the
+# watermark but has been idle for more than one hour.
+touch -t 200001010000 "$TEST_MEMORY_ROOT/.last-sync"
+: > "$TEST_DSH_HOME/sessions/session.jsonl.zstd"
+touch -t 200001010001 "$TEST_DSH_HOME/sessions/session.jsonl.zstd"
 
 cat > "$TEST_INTEGRATION/dsh-memory-init" <<'EOF'
 #!/bin/zsh
@@ -93,6 +96,17 @@ for forbidden_name in \
     exit 1
   fi
 done
+
+/usr/bin/python3 - "$TEST_MEMORY_ROOT/.sync/runs" <<'PY'
+import json
+import pathlib
+import sys
+
+run_files = sorted(pathlib.Path(sys.argv[1]).glob("*.json"))
+assert len(run_files) == 1, run_files
+record = json.loads(run_files[0].read_text())
+assert record["candidate_sessions"] == 1, record
+PY
 
 MISSING_STDERR="$TEST_ROOT/missing-dsh.stderr"
 # Remove the marker so the first-run path reaches the DSH executable check.
