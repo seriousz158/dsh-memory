@@ -131,7 +131,7 @@ window.__ModuleLoader__.load({
                 jsx.jsx("button", { type: "button", role: "switch", "aria-label": "长期记忆", "aria-checked": enabled, className: "dshmu_switch", disabled: !available, onClick: () => scope.set("enabled", !enabled), children: jsx.jsx("span", { className: "dshmu_knob" }) }),
               ] }),
               jsx.jsxs("div", { className: "dshmu_clear", children: [
-                jsx.jsx("span", { className: "dshmu_title", children: "删除记忆" }),
+                jsx.jsx("span", { className: "dshmu_title", children: "记忆管理" }),
                 jsx.jsx("span", { className: "dshmu_desc", children: "清空数据可从 Git 历史恢复；不会关闭长期记忆。" }),
                 jsx.jsx("span", { className: repository?.error ? "dshmu_status dshmu_error" : "dshmu_status", children: repositoryDescription }),
                 stage === 1 && jsx.jsx("span", { className: "dshmu_status dshmu_error", children: "将清空 summary.md、handbook、rollouts 和 archive 中的数据。" }),

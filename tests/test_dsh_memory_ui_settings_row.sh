@@ -14,6 +14,7 @@ grep -Fq -- 'memory.setEnabled({ enabled: value })' "$CLIENT"
 grep -Fq -- 'memory.status()' "$CLIENT"
 grep -Fq -- 'memory.clear({ confirmation: "DELETE_MEMORY" })' "$CLIENT"
 grep -Fq -- 'stage === 2 && phrase !== "删除记忆"' "$CLIENT"
+grep -Fq -- 'className: "dshmu_title", children: "记忆管理"' "$CLIENT"
 grep -Fq -- '~/.dsh/storages/memory' "$CLIENT"
 if rg -q -- '~?/?\.zcode/memory|DSH_MEMORY_ROOT|memoryRoot|rootPath' "$CLIENT"; then
   print -u2 -- 'dsh-memory-ui must not expose a legacy or browser-selected memory path.'
