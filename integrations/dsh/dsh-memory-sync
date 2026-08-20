@@ -16,9 +16,12 @@ DSH_MEMORY_ROOT="${DSH_MEMORY_ROOT:-$DSH_HOME/storages/memory}"
 MARKER="$DSH_MEMORY_ROOT/.last-sync"
 DSH_BIN="${DSH_BIN:-dsh}"
 DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
-# The host, not the model, owns this observable count. It includes only logs
-# that passed the watermark and one-hour idle guards for this invocation.
+# These are host-lifecycle metrics, never numbers inferred from the model's
+# natural-language report. Candidates pass the watermark and one-hour idle
+# guards; a successful headless invocation processes every candidate it receives.
 CANDIDATE_SESSIONS=0
+PROCESSED_SESSIONS=0
+SKIPPED_SESSIONS=0
 
 DRY_RUN=0
 case "${1:-}" in
@@ -169,6 +172,10 @@ done
   cd "$STAGING"
   /usr/bin/env -i "${CHILD_ENV[@]}" "$DSH_EXECUTABLE" --profile headless "$STAGING_PROMPT"
 )
+# The process exited successfully, so every eligible log was delivered to
+# headless DSH. Per-session NO_SIGNAL results are deliberately not guessed from
+# model prose and therefore do not change the host-side skipped count.
+PROCESSED_SESSIONS="$CANDIDATE_SESSIONS"
 
 # --- Host-side verification and apply ---
 difference="$(sync_apply diff --staging "$STAGING" --manifest "$MANIFEST")" || {
@@ -211,6 +218,8 @@ sync_apply finalize \
   --status applied \
   --started-at "$STARTED_AT" \
   --candidate-sessions "$CANDIDATE_SESSIONS" \
+  --processed-sessions "$PROCESSED_SESSIONS" \
+  --skipped-sessions "$SKIPPED_SESSIONS" \
   --changed-paths "$changed_paths" \
   --recovery-commit "$recovery_commit" \
   --apply-commit "$apply_commit" \

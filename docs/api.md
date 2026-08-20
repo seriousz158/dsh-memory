@@ -162,6 +162,15 @@ Lists recent journaled runs (newest first, default limit 20):
 }
 ```
 
+For a `sync` run, `candidate_sessions`, `processed_sessions`, and
+`skipped_sessions` are host-lifecycle counts, not values inferred from a model
+report: candidates passed the watermark and one-hour-idle guards; processed
+candidates were successfully submitted to headless DSH; skipped candidates were
+withheld by the host before submission. On the current successful incremental
+path, every candidate is submitted, so `processed_sessions` equals
+`candidate_sessions` and `skipped_sessions` is `0`. A model's per-session
+`NO_SIGNAL` judgment is intentionally not parsed from natural-language output.
+
 ### `memory.rollback({ runId, confirmation })`
 
 Rolls back a whole journaled run by creating a new rollback commit. The only

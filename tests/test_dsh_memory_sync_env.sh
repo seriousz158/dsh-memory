@@ -106,6 +106,8 @@ run_files = sorted(pathlib.Path(sys.argv[1]).glob("*.json"))
 assert len(run_files) == 1, run_files
 record = json.loads(run_files[0].read_text())
 assert record["candidate_sessions"] == 1, record
+assert record["processed_sessions"] == 1, record
+assert record["skipped_sessions"] == 0, record
 PY
 
 MISSING_STDERR="$TEST_ROOT/missing-dsh.stderr"
