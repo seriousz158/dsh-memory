@@ -2,16 +2,18 @@
 
 ## Prerequisites
 
-- DSH `0.1.0-rc.6`
+- DSH `0.1.0-rc.7` (recommended and tested)
 - Node.js 22.x
 - Python 3.11.x
 - Git available on `PATH`
 - A local clone of this repository
 
-Install the matching DSH version yourself, then install the plugin repository dependencies:
+Install the pinned DSH runtime yourself, then install the plugin repository
+dependencies:
 
 ```zsh
-npm install --global @deepseek-ai/dsh@0.1.0-rc.6
+npm install --global @deepseek-ai/dsh@0.1.0-rc.7
+dsh --version
 git clone https://github.com/seriousz158/dsh-memory.git
 cd dsh-memory
 npm ci --ignore-scripts
@@ -79,6 +81,11 @@ used during installation.
 
 The sync command does not install DSH. It requires a `dsh` executable on `PATH`, or a deliberately configured `DSH_BIN`. It performs no work while `memory.enabled` is false.
 
-The published runtime peer range starts at DSH `0.1.0-rc.6`. The repository's
-clean-room development dependencies currently use `0.1.0-rc.7`, because the
-registry's `rc.6` transitive peer graph is not resolvable by plain `npm ci`.
+The v0.2.0 host and UI packages still declare the runtime peer range
+`@deepseek-ai/dsh@^0.1.0-rc.6`, so DSH `rc.6` remains peer-compatible. The
+repository's reproducible clean-room and local integration baseline is
+`0.1.0-rc.7`, because the registry's `rc.6` transitive peer graph is not
+resolvable by plain `npm ci`. DSH `rc.8` and later are unverified. Avoid an
+unversioned `npx` or global install that can silently select a newer
+prerelease; verify the selected executable with `dsh --version` before
+installation and testing.

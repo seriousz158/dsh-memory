@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented here.
 
+## [0.2.0] - 2026-08-20
+
+### Added
+
+- Transactional idle-session synchronization through an isolated staging
+  repository and host-owned recovery/apply commits.
+- Metadata-only sync journals, `memory.runs()`, `memory.rollback()`, and
+  recent-run status reporting.
+- Structured Markdown front matter with incremental legacy-file migration and
+  a dry-run preview that does not modify the live memory repository.
+- Settings UI support for inspecting the latest sync and rolling back the
+  latest journaled apply.
+
+### Compatibility
+
+- DSH `0.1.0-rc.6` remains within the declared peer range.
+- DSH `0.1.0-rc.7` is the reproducible clean-room and locally integrated
+  baseline.
+- DSH `rc.8` and later releases are not verified by this release.
+
+### Safety
+
+- Existing legacy memory files remain readable without a forced migration.
+- Rollback creates a new Git commit and never resets or rewrites history.
+- Sync journals contain metadata only; transcripts, prompts, and credentials
+  are not persisted by the journal.
+
 ## [0.1.0] - 2026-08-19
 
 ### Added
