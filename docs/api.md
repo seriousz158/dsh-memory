@@ -139,6 +139,67 @@ payload records (handbook/, rollouts/, archive/) without front matter;
 is true when at least one legacy record exists. `lastRun` is null before the
 first journaled run and otherwise reflects `.sync/last-run.json`.
 
+### `memory.legacyRecords()` (v0.6)
+
+Returns metadata-only descriptions of legacy Markdown records under
+`handbook/`, `rollouts/`, and `archive/`. Files that already have valid front
+matter are not returned. The response never includes the record body:
+
+```json
+{
+  "ok": true,
+  "value": {
+    "count": 1,
+    "pendingMigration": true,
+    "records": [
+      {
+        "path": "handbook/old-note.md",
+        "id": "legacy-4f2b7c1a9e0d3c55",
+        "frontMatter": "---\nschema_version: 1\nid: legacy-4f2b7c1a9e0d3c55\ncreated_at: 2026-08-20\nupdated_at: 2026-08-20\n---\n\n",
+        "createdAt": "2026-08-20",
+        "updatedAt": "2026-08-20",
+        "bytes": 128
+      }
+    ]
+  }
+}
+```
+
+Failures use `repo-unavailable`, `unsafe-layout`, or a migration-specific
+filesystem error code.
+
+### `memory.migrateLegacy({ dryRun })` (v0.6)
+
+`dryRun` is required and must be a boolean. `true` returns the pending records
+and planned paths without changing the worktree, journal, watermark, or Git:
+
+```json
+{
+  "ok": true,
+  "value": {
+    "dryRun": true,
+    "status": "pending",
+    "legacyCount": 1,
+    "migratedCount": 0,
+    "changedPaths": ["handbook/old-note.md"],
+    "recoveryCommit": null,
+    "applyCommit": null,
+    "journalCommit": null
+  }
+}
+```
+
+`{ "dryRun": false }` applies deterministic front matter through the same
+staging, validation, operation-lock, recovery/apply-commit, and metadata-only
+journal path used by host-owned sync. The original Markdown body is preserved.
+Applying again returns `status: "no_change"` with no new payload commit.
+
+Failures use `migration-invalid-request`, `repo-unavailable`, `unsafe-layout`,
+`operation-in-progress`, `interrupted-run`, or a stable `migration-*` error
+code. If an older process left an active run, the host journals it as
+`status: "interrupted"` and stops; the operator must inspect `health()` and
+recover the repository explicitly before applying another migration.
+
 ### `memory.status()` (v0.3)
 
 The response adds a pending-preview field:

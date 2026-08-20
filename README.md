@@ -125,9 +125,26 @@ v0.5 adds operational tooling around the memory store:
   unsupported) and the integration tool defaults.
 - The release checklist now verifies the backup round-trip before release.
 
+## v0.6: library-backed legacy migration and UI visibility
+
+v0.6 moves legacy-record inspection and migration into the host library so the
+CLI and settings UI use the same safe transaction path:
+
+- `memory.legacyRecords()` returns metadata-only entries for legacy Markdown
+  files (path, deterministic id, generated front matter, dates, and size).
+- `memory.migrateLegacy({ dryRun: true })` is read-only; applying with
+  `{ dryRun: false }` stages the changes, validates them, and performs a
+  host-owned recovery/apply transaction. It only adds deterministic front
+  matter and preserves each record body.
+- `dsh-memory-migrate --dry-run` and `--apply` delegate to those library APIs.
+  The journal records operation metadata only; it never contains memory body,
+  transcript, prompt, or credential content.
+- The settings UI shows pending legacy paths and generated ids and offers an
+  explicit migration action. It does not expose the filesystem root or run Git.
+
 ## Compatibility
 
-`v0.5.0` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
+`v0.6.0` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
 tested and locally integrated with a consistently pinned `0.1.0-rc.7` graph:
 
 | Component | Supported version |
@@ -153,14 +170,14 @@ Clone the repository and install its reproducible development/runtime dependenci
 ```zsh
 git clone https://github.com/seriousz158/dsh-memory.git
 cd dsh-memory
-# Use the pinned runtime that this v0.5.0 integration was tested with.
+# Use the pinned runtime that this v0.6.0 integration was tested with.
 npm install --global @deepseek-ai/dsh@0.1.0-rc.7
 dsh --version
 npm ci --ignore-scripts
 ```
 
 This is a source-and-GitHub-Release project. Both workspace packages are
-intentionally marked private, so `v0.5.0` cannot be published to npm by
+intentionally marked private, so `v0.6.0` cannot be published to npm by
 accident.
 
 Install the two local packages into your DSH profile. The installer defaults to
@@ -228,6 +245,8 @@ The local UI talks only to the fixed `memory` remote service:
 memory.getSettings()
 memory.setEnabled({ enabled: boolean })
 memory.status()
+memory.legacyRecords()
+memory.migrateLegacy({ dryRun: boolean })
 memory.clear({ confirmation: "DELETE_MEMORY" })
 ```
 
