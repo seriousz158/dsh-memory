@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## [0.7.0] - 2026-08-21
+
+### Added
+
+- Browser end-to-end tests for the settings UI: the suite boots a throwaway
+  DSH web profile on an ephemeral port (reusing the pinned runtime and shared
+  plugin store, symlinking the local workspaces, and seeding onboarding
+  settings plus an empty fixture memory repository), then drives headless
+  Chromium to assert the panel across desktop/light, dark, and narrow
+  viewports, plus empty-state hiding of the Legacy and preview sections and
+  the enable switch.
+- The E2E suite runs as part of `npm test` and skips cleanly when the Python
+  Playwright browser-acceptance tooling is unavailable.
+
 ## [0.6.0] - 2026-08-20
 
 ### Added

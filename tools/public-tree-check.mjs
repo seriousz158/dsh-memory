@@ -67,6 +67,8 @@ const allowed = new Set([
   "packages/dsh-memory-ui/lib/client.js",
   "packages/dsh-memory-ui/lib/index.js",
   "tests/run-memory-tests.sh",
+  "tests/helpers/dsh-e2e-service.mjs",
+  "tests/test_dsh_memory_e2e_ui.py",
   "tests/test_dsh_memory_init.sh",
   "tests/test_dsh_memory_install.sh",
   "tests/test_dsh_memory_metadata.mjs",
@@ -223,7 +225,7 @@ try {
       if (content === null) continue;
       try {
         const manifest = JSON.parse(content);
-        if (manifest.version !== "0.6.0") add("manifest version is not 0.6.0", manifestPath);
+        if (manifest.version !== "0.7.0") add("manifest version is not 0.7.0", manifestPath);
         if (manifestPath !== "package.json" && manifest.private !== true) {
           add("package is not locked against npm publication", manifestPath);
         }
