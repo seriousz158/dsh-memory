@@ -1,0 +1,169 @@
+#!/usr/bin/env node
+/**
+ * dsh-memory-migrate: progressive front matter migration for legacy records.
+ *
+ *   dsh-memory-migrate --dry-run   report which legacy files would change
+ *   dsh-memory-migrate --apply     add front matter to legacy records
+ *
+ * Migration never calls a model, never infers type/status/confidence, and
+ * never edits the record body. It only prepends a stable front matter block
+ * with schema_version, a deterministic legacy id, and the file's mtime date.
+ * --apply builds a recovery/apply commit pair and records the run in the
+ * journal. Re-running is idempotent.
+ */
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
+import { createHash } from "node:crypto";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, relative, resolve } from "node:path";
+import { parseFrontMatter } from "../../packages/dsh-memory/lib/memory-metadata.js";
+import { isPayloadPath } from "../../packages/dsh-memory/lib/memory-tree.js";
+
+const execFile = promisify(execFileCallback);
+const DSH_HOME = resolve(process.env.DSH_HOME || join(homedir(), ".dsh"));
+const MEMORY_ROOT = resolve(process.env.DSH_MEMORY_ROOT || join(DSH_HOME, "storages", "memory"));
+
+async function git(args) {
+  const { stdout } = await execFile("/usr/bin/git", ["-C", MEMORY_ROOT, ...args], { encoding: "utf8" });
+  return stdout.trim();
+}
+
+async function walk(directory) {
+  const files = [];
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await walk(full));
+    else if (entry.isFile()) files.push(full);
+  }
+  return files;
+}
+
+async function legacyRecords() {
+  const records = [];
+  const roots = ["handbook", "rollouts", "archive"].map((name) => join(MEMORY_ROOT, name));
+  for (const root of roots) {
+    for (const file of await walk(root)) {
+      if (!file.endsWith(".md")) continue;
+      const rel = relative(MEMORY_ROOT, file);
+      if (!isPayloadPath(rel)) continue;
+      const content = await readFile(file, "utf8");
+      if (parseFrontMatter(content, rel) !== null) continue; // already structured
+      records.push({ file, rel, content });
+    }
+  }
+  return records.sort((a, b) => a.rel.localeCompare(b.rel));
+}
+
+function legacyId(rel) {
+  const digest = createHash("sha256").update(rel).digest("hex").slice(0, 16);
+  return `legacy-${digest}`;
+}
+
+function migratedContent(record, mtime) {
+  const date = mtime.toISOString().slice(0, 10);
+  // Migration only adds stable fields: schema_version, a deterministic id,
+  // and the file mtime date. It never infers type/status/confidence.
+  const block = [
+    "---",
+    "schema_version: 1",
+    `id: ${legacyId(record.rel)}`,
+    `created_at: ${date}`,
+    `updated_at: ${date}`,
+    "---",
+  ].join("\n");
+  return block + "\n" + record.content;
+}
+
+async function journal(runId, status, changedPaths, recoveryCommit, applyCommit, errorCode) {
+  const now = new Date().toISOString();
+  const record = {
+    schema_version: 1,
+    run_id: runId,
+    operation: "migrate",
+    status,
+    started_at: now,
+    finished_at: now,
+    candidate_sessions: 0,
+    processed_sessions: changedPaths.length,
+    skipped_sessions: 0,
+    changed_paths: changedPaths,
+    recovery_commit: recoveryCommit ?? null,
+    apply_commit: applyCommit ?? null,
+    error_code: errorCode ?? null,
+  };
+  const runsDir = join(MEMORY_ROOT, ".sync", "runs");
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(runsDir, { recursive: true });
+  await writeFile(join(runsDir, `${runId}.json`), JSON.stringify(record, null, 2) + "\n", { mode: 0o600 });
+  const last = { ...record };
+  delete last.candidate_sessions;
+  delete last.processed_sessions;
+  delete last.skipped_sessions;
+  await writeFile(join(MEMORY_ROOT, ".sync", "last-run.json"), JSON.stringify(last, null, 2) + "\n", { mode: 0o600 });
+  await git(["add", "--", ".sync"]);
+  await git(["commit", "-m", `DPSK memory journal: ${runId}`, "--", ".sync"]);
+}
+
+const dryRun = process.argv.includes("--dry-run");
+const apply = process.argv.includes("--apply");
+if (dryRun === apply) {
+  console.error("dsh-memory-migrate: pass exactly one of --dry-run or --apply");
+  process.exit(2);
+}
+
+let records;
+try {
+  records = await legacyRecords();
+} catch (error) {
+  console.error(`dsh-memory-migrate: cannot read memory repository at ${MEMORY_ROOT}: ${error.message}`);
+  process.exit(1);
+}
+
+if (dryRun) {
+  if (records.length === 0) {
+    console.log("dsh-memory-migrate: no legacy records; nothing to migrate.");
+    process.exit(0);
+  }
+  console.log(`dsh-memory-migrate: ${records.length} legacy record(s) would be migrated:`);
+  for (const record of records) console.log(`  ${record.rel}`);
+  process.exit(0);
+}
+
+// --apply
+if (records.length === 0) {
+  console.log("dsh-memory-migrate: no legacy records; nothing to migrate.");
+  process.exit(0);
+}
+
+const runId = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z") + "-migrate";
+const head = await git(["rev-parse", "HEAD"]);
+const changedPaths = [];
+
+try {
+  // 1. Migration recovery commit: the current HEAD tree is the recovery point
+  // because migration only prepends front matter to tracked files.
+  const recoveryCommit = head;
+
+  // 2. Add front matter to each legacy record, preserving the body.
+  for (const record of records) {
+    const mtime = await stat(record.file);
+    const updated = migratedContent(record, mtime.mtime);
+    await writeFile(record.file, updated, { mode: 0o600 });
+    changedPaths.push(record.rel);
+  }
+
+  // 3. Apply commit with the migrated payload.
+  await git(["add", "--", ...changedPaths]);
+  const applyCommit = await git(["commit", "-m", `DPSK memory migrate: ${runId}`]);
+  await journal(runId, "applied", changedPaths, recoveryCommit, applyCommit, null);
+  console.log(`dsh-memory-migrate: migrated ${changedPaths.length} record(s) (recovery ${recoveryCommit.slice(0, 8)}, apply ${applyCommit.slice(0, 8)}).`);
+} catch (error) {
+  try {
+    await git(["reset", "--mixed", head]);
+  } catch {}
+  await journal(runId, "failed", changedPaths, head, null, "migrate-failed");
+  console.error(`dsh-memory-migrate: migration failed: ${error.message}`);
+  process.exit(1);
+}

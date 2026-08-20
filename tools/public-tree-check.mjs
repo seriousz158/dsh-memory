@@ -42,13 +42,19 @@ const allowed = new Set([
   "examples/dsh/cordis.patch.yml.example",
   "examples/dsh/settings.yaml.example",
   "integrations/dsh/dsh-memory-init",
+  "integrations/dsh/dsh-memory-migrate",
   "integrations/dsh/dsh-memory-sync",
   "integrations/dsh/dsh-memory-sync.plist.example",
   "integrations/dsh/install.sh",
   "packages/dsh-memory/package.json",
+  "packages/dsh-memory/.npmignore",
   "packages/dsh-memory/LICENSE",
   "packages/dsh-memory/lib/index.js",
+  "packages/dsh-memory/lib/memory-metadata.js",
+  "packages/dsh-memory/lib/memory-tree.js",
   "packages/dsh-memory/lib/safe-clear.py",
+  "packages/dsh-memory/lib/sync-apply.py",
+  "packages/dsh-memory/lib/sync-transaction.js",
   "packages/dsh-memory/templates/README.md",
   "packages/dsh-memory/templates/scripts/filter_session.py",
   "packages/dsh-memory-ui/package.json",
@@ -58,11 +64,15 @@ const allowed = new Set([
   "tests/run-memory-tests.sh",
   "tests/test_dsh_memory_init.sh",
   "tests/test_dsh_memory_install.sh",
+  "tests/test_dsh_memory_metadata.mjs",
+  "tests/test_dsh_memory_migrate.sh",
   "tests/test_dsh_memory_paths.mjs",
   "tests/test_dsh_memory_redaction.mjs",
   "tests/test_dsh_memory_repository.mjs",
+  "tests/test_dsh_memory_sync_transaction.mjs",
   "tests/test_dsh_memory_runtime.sh",
   "tests/test_dsh_memory_sync_disabled.sh",
+  "tests/test_dsh_memory_sync_dry_run.sh",
   "tests/test_dsh_memory_sync_env.sh",
   "tests/test_dsh_memory_ui_settings_row.sh",
   "tests/test_public_tree.sh",
@@ -202,7 +212,7 @@ try {
       if (content === null) continue;
       try {
         const manifest = JSON.parse(content);
-        if (manifest.version !== "0.1.0") add("manifest version is not 0.1.0", manifestPath);
+        if (manifest.version !== "0.2.0") add("manifest version is not 0.2.0", manifestPath);
         if (manifestPath !== "package.json" && manifest.private !== true) {
           add("package is not locked against npm publication", manifestPath);
         }

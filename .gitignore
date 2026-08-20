@@ -1,5 +1,6 @@
 # Local agent bookkeeping; never ship it in the published repository.
 .superpowers/
+docs/superpowers/
 
 # Local DSH state and browser automation data.
 .dsh/

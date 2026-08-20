@@ -13,25 +13,57 @@ It adds one persistent setting, a safe settings-page workflow for clearing memor
 - Refuses unsafe repository layouts, symbolic-link escapes, non-repository roots, and path races during a clear operation.
 - Can process only idle local session logs through an optional headless synchronizer. The synchronizer defaults to `workspace-write`, never silently installs DSH, and forwards only an allowlisted environment.
 
+## v0.2: transactional sync, audit, structured memory, and rollback
+
+v0.2 makes every automatic write transactional:
+
+- The synchronizer copies the payload tree into an isolated staging worktree;
+  headless DSH only ever sees and writes that staging copy.
+- The host verifies the staged diff (paths, read-only reference, live-root
+  concurrency) and applies it to the live memory repository with its own
+  `recovery` + `apply` commit pair. The model never runs Git.
+- Every run is journaled under `.sync/runs/<run-id>.json` with `last-run.json`
+  as the current status; the journal holds metadata only, never transcripts,
+  prompts, or credentials. `.last-sync` advances only after a successful apply.
+- New memory records use Markdown front matter (`schema_version: 1`, `id`,
+  `type`, `status`, `confidence`, dates, tags, `source_rollouts`). Legacy files
+  without front matter keep working, are counted by `status()`, and can be
+  migrated incrementally with `dsh-memory-migrate --dry-run` / `--apply`.
+- The latest journaled sync run can be rolled back as a whole through
+  `memory.rollback()` (with the `ROLLBACK_MEMORY` confirmation) or the settings
+  UI. Rollback creates a new commit; it never resets or rewrites history.
+- `memory.status()` now reports `schemaVersion`, `legacyFileCount`,
+  `pendingMigration`, and `lastRun`; `memory.runs({ limit })` lists the journal.
+
+`dsh-memory-sync --dry-run` reports the candidate diff (added/modified/deleted
+paths, rejected files and reasons) without touching the live root, the journal,
+Git, or the watermark.
+
+The clear operation keeps its existing semantics: it preserves `.sync`,
+`.last-sync`, `README.md`, and `scripts/`, and after a clear the journal still
+exists so an operator can see what happened. Rollback after a clear reports
+`rollback-conflict` because newer memory writes superseded the run.
+
 ## Compatibility
 
-`v0.1.0` declares runtime compatibility with DSH `0.1.0-rc.6` and is tested
-with the currently resolvable `0.1.0-rc.7` development dependency graph:
+`v0.2.0` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
+tested and locally integrated with a consistently pinned `0.1.0-rc.7` graph:
 
 | Component | Supported version |
 | --- | --- |
-| DSH runtime peer range | `@deepseek-ai/dsh@^0.1.0-rc.6` |
+| DSH runtime peer range | `@deepseek-ai/dsh@^0.1.0-rc.6` (rc.6 and rc.7) |
+| Recommended/tested runtime | `0.1.0-rc.7` |
 | Clean-room development test graph | DSH client packages `0.1.0-rc.7` |
 | Node.js | 22.x |
 | Python | 3.11.x |
 | Git | a local executable available on `PATH` |
 | Operating system | macOS is the supported/tested integration target |
 
-The package uses DSH's Cordis loader interfaces. The `rc.7` test graph is used
-because the registry's `rc.6` transitive peer graph cannot be installed by
-plain `npm ci`; it does not change the host/UI packages' declared `rc.6`
-runtime peer range. Treat other DSH releases as unverified until they pass this
-repository's test suite.
+The package uses DSH's Cordis loader interfaces. The `rc.7` graph is the
+reproducible development and integration baseline because the registry's `rc.6`
+transitive peer graph cannot be installed by plain `npm ci`; this does not
+change the host/UI packages' declared `rc.6` runtime peer range. DSH `rc.8` and
+later releases are unverified until they pass this repository's test suite.
 
 ## Install
 
@@ -40,11 +72,14 @@ Clone the repository and install its reproducible development/runtime dependenci
 ```zsh
 git clone https://github.com/seriousz158/dsh-memory.git
 cd dsh-memory
+# Use the pinned runtime that this v0.2.0 integration was tested with.
+npm install --global @deepseek-ai/dsh@0.1.0-rc.7
+dsh --version
 npm ci --ignore-scripts
 ```
 
 This is a source-and-GitHub-Release project. Both workspace packages are
-intentionally marked private, so `v0.1.0` cannot be published to npm by
+intentionally marked private, so `v0.2.0` cannot be published to npm by
 accident.
 
 Install the two local packages into your DSH profile. The installer defaults to

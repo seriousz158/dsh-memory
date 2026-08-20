@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Automatic local long-term memory for DSH",
   "type": "module",
@@ -10,7 +10,8 @@
   },
   "files": [
     "LICENSE",
-    "lib",
+    "lib/*.js",
+    "lib/*.py",
     "templates"
   ],
   "repository": {
