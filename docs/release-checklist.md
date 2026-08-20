@@ -52,6 +52,19 @@ Confirm that each package contains only runtime source, templates, metadata,
 license material, and intended documentation. It must not contain test memory,
 local state, logs, credentials, caches, or generated archives.
 
+## 4b. Verify backup round-trip (v0.5)
+
+Exercise the backup export/import against a temporary repository before
+release:
+
+```zsh
+zsh tests/test_dsh_memory_backup.sh
+```
+
+The test exports a fixture repository to a Git bundle, restores it into a new
+directory, and asserts the full commit history survives. It must not touch a
+real memory store.
+
 ## 5. Record release evidence
 
 - Record the exact commit and version being released.

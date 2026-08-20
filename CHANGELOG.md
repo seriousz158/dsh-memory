@@ -2,6 +2,35 @@
 
 All notable changes to this project are documented here.
 
+## [0.5.0] - 2026-08-20
+
+### Added
+
+- `dsh-memory-backup export <bundle>`: self-contained Git bundle of the full
+  memory history plus a manifest sidecar (head, commit count, payload file
+  list, size). The live store is never modified.
+- `dsh-memory-backup import <bundle> [--target <root>]`: restores a bundle
+  into a new directory as a complete Git worktree (recovery/apply/journal/
+  rollback history preserved). Refuses an existing target; `--dry-run`
+  verifies without writing.
+- `docs/compatibility.md`: DSH runtime matrix (rc.6 declared peer, rc.7
+  verified baseline), operating-system scope (macOS supported, Linux
+  expected, Windows unsupported), and integration tool defaults.
+- Release checklist now verifies the backup round-trip before release.
+
+### Compatibility
+
+- DSH `0.1.0-rc.6` remains within the declared peer range.
+- DSH `0.1.0-rc.7` is the reproducible clean-room and locally integrated
+  baseline.
+
+### Safety
+
+- Backup export never touches the live store; import never overwrites an
+  existing repository and verifies the bundle before writing.
+- The backup manifest contains metadata only (head, counts, file list) —
+  no transcripts, prompts, or credentials.
+
 ## [0.4.0] - 2026-08-20
 
 ### Added

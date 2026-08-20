@@ -36,11 +36,13 @@ const allowed = new Set([
   "package-lock.json",
   "package.json",
   "docs/api.md",
+  "docs/compatibility.md",
   "docs/installation.md",
   "docs/privacy-and-recovery.md",
   "docs/release-checklist.md",
   "examples/dsh/cordis.patch.yml.example",
   "examples/dsh/settings.yaml.example",
+  "integrations/dsh/dsh-memory-backup",
   "integrations/dsh/dsh-memory-init",
   "integrations/dsh/dsh-memory-migrate",
   "integrations/dsh/dsh-memory-sync",
@@ -68,6 +70,7 @@ const allowed = new Set([
   "tests/test_dsh_memory_install.sh",
   "tests/test_dsh_memory_metadata.mjs",
   "tests/test_dsh_memory_operation_lock.mjs",
+  "tests/test_dsh_memory_backup.sh",
   "tests/test_dsh_memory_migrate.sh",
   "tests/test_dsh_memory_paths.mjs",
   "tests/test_dsh_memory_preview.mjs",
@@ -218,7 +221,7 @@ try {
       if (content === null) continue;
       try {
         const manifest = JSON.parse(content);
-        if (manifest.version !== "0.4.0") add("manifest version is not 0.4.0", manifestPath);
+        if (manifest.version !== "0.5.0") add("manifest version is not 0.5.0", manifestPath);
         if (manifestPath !== "package.json" && manifest.private !== true) {
           add("package is not locked against npm publication", manifestPath);
         }

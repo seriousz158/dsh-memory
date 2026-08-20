@@ -1,0 +1,115 @@
+#!/usr/bin/env node
+/**
+ * dsh-memory-backup: export and import the memory repository as a Git bundle.
+ *
+ *   dsh-memory-backup export <bundle-path> [--dry-run]
+ *       Create a self-contained bundle of the full memory Git history plus a
+ *       sidecar manifest (head, record counts, payload size). The live memory
+ *       root is never modified.
+ *
+ *   dsh-memory-backup import <bundle-path> [--target <root>] [--dry-run]
+ *       Restore a bundle into a NEW empty directory (never over an existing
+ *       repository). The restored root is a full Git worktree with the same
+ *       payload, journal, and history as the source.
+ *
+ * The bundle is a `git bundle create` of all refs, so it preserves the full
+ * commit graph (recovery/apply/journal/rollback history) and can be restored
+ * on any machine with Git. A dry-run never writes the target.
+ */
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdir, readFile, stat, writeFile, readdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+
+const execFile = promisify(execFileCallback);
+const DSH_HOME = resolve(process.env.DSH_HOME || join(homedir(), ".dsh"));
+const MEMORY_ROOT = resolve(process.env.DSH_MEMORY_ROOT || join(DSH_HOME, "storages", "memory"));
+
+function fail(code, message) {
+  process.stderr.write(`dsh-memory-backup: ${message}\n`);
+  process.exit(code === "usage" ? 2 : 1);
+}
+
+async function git(root, args) {
+  const { stdout } = await execFile("/usr/bin/git", ["-C", root, ...args], { encoding: "utf8" });
+  return stdout.trim();
+}
+
+async function walk(directory) {
+  const files = [];
+  let entries;
+  try { entries = await readdir(directory, { withFileTypes: true }); } catch { return files; }
+  for (const entry of entries) {
+    const full = join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await walk(full));
+    else if (entry.isFile()) files.push(full);
+  }
+  return files;
+}
+
+async function manifest() {
+  const head = await git(MEMORY_ROOT, ["rev-parse", "HEAD"]);
+  const count = (await git(MEMORY_ROOT, ["rev-list", "--count", "HEAD"])).trim();
+  const files = await walk(MEMORY_ROOT);
+  const payload = files.filter((file) => !file.includes("/.git/") && !file.endsWith("/.git")).map((file) => file.slice(MEMORY_ROOT.length + 1));
+  const size = (await stat(MEMORY_ROOT)).size;
+  return {
+    schema_version: 1,
+    exported_at: new Date().toISOString(),
+    head,
+    commit_count: Number(count),
+    payload_files: payload.filter((file) => !file.startsWith(".sync/") && file !== ".last-sync" && file !== "README.md"),
+    payload_size_bytes: size,
+  };
+}
+
+async function exportBundle(bundlePath, dryRun) {
+  await git(MEMORY_ROOT, ["bundle", "create", bundlePath, "--all"]);
+  const meta = await manifest();
+  const sidecar = `${bundlePath}.json`;
+  if (!dryRun) await writeFile(sidecar, JSON.stringify(meta, null, 2) + "\n", { mode: 0o600 });
+  process.stdout.write(`dsh-memory-backup: exported ${meta.commit_count} commits, ${meta.payload_files.length} payload files to ${bundlePath}\n`);
+  process.stdout.write(`dsh-memory-backup: head ${meta.head} (manifest ${sidecar})\n`);
+}
+
+async function importBundle(bundlePath, target, dryRun) {
+  const targetRoot = resolve(target ?? join(dirname(bundlePath), "restored-memory"));
+  let targetStat;
+  try { targetStat = await stat(targetRoot); } catch { targetStat = null; }
+  if (targetStat) {
+    fail("exists", `target already exists: ${targetRoot}`);
+  }
+  // Verify the bundle before touching anything.
+  await execFile("/usr/bin/git", ["bundle", "verify", bundlePath]);
+  const head = await execFile("/usr/bin/git", ["bundle", "list-heads", bundlePath], { encoding: "utf8" });
+  if (dryRun) {
+    process.stdout.write(`dsh-memory-backup: verified ${bundlePath}\n`);
+    process.stdout.write(`dsh-memory-backup: dry-run — would restore to ${targetRoot}\n`);
+    process.stdout.write(head.stdout.trim() + "\n");
+    return;
+  }
+  await mkdir(targetRoot, { recursive: true, mode: 0o700 });
+  await git(targetRoot, ["init", "--quiet"]);
+  // Fetch the bundle onto a temporary branch (git refuses to fetch into the
+  // branch currently checked out), materialize the worktree, then rename the
+  // branch to main.
+  await git(targetRoot, ["fetch", bundlePath, "HEAD:refs/heads/restored-from-bundle"]);
+  await git(targetRoot, ["checkout", "-f", "restored-from-bundle"]);
+  await git(targetRoot, ["branch", "-M", "main"]);
+  process.stdout.write(`dsh-memory-backup: restored to ${targetRoot}\n`);
+}
+
+const [operation, bundlePath, ...rest] = process.argv.slice(2);
+if (!operation || !bundlePath || !["export", "import"].includes(operation)) {
+  fail("usage", "usage: dsh-memory-backup export|import <bundle-path> [--target <root>] [--dry-run]");
+}
+const dryRun = rest.includes("--dry-run");
+const targetIndex = rest.indexOf("--target");
+const target = targetIndex !== -1 ? rest[targetIndex + 1] : undefined;
+
+if (operation === "export") {
+  await exportBundle(bundlePath, dryRun);
+} else {
+  await importBundle(bundlePath, target, dryRun);
+}
