@@ -76,9 +76,27 @@ v0.3 hardens the sync pipeline against concurrent runs and crashes:
 `dsh-memory-sync --dry-run` remains read-only: it reports the candidate diff
 without touching the live root, the lock, the journal, Git, or the watermark.
 
+## v0.3.1: preview before apply
+
+v0.3.1 lets an operator review a candidate sync before it is applied:
+
+- `dsh-memory-sync --preview <id>` captures the candidate diff (baseline plus
+  model edits) as a pending preview under `<root>/.sync/previews/<id>` with a
+  7-day expiry, without applying anything.
+- `dsh-memory-sync --apply-preview <id>` applies a pending preview as a normal
+  sync transaction (recovery + apply commits), consumes the preview, and
+  journals the run under `operation: preview`.
+- `dsh-memory-sync --discard-preview <id>` removes a pending preview.
+- `dsh-memory-sync --dry-run --json` emits a single machine-parseable JSON
+  report (`dryRun`, `candidateSessions`, `changedPaths`, `added`, `modified`,
+  `deleted`, `changedBytes`) with all progress lines suppressed from stdout.
+- `memory.previews()`, `memory.applyPreview()`, and `memory.discardPreview()`
+  expose the same flow to the settings UI, which shows pending previews with
+  apply/discard actions.
+
 ## Compatibility
 
-`v0.3.0` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
+`v0.3.1` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
 tested and locally integrated with a consistently pinned `0.1.0-rc.7` graph:
 
 | Component | Supported version |
@@ -104,14 +122,14 @@ Clone the repository and install its reproducible development/runtime dependenci
 ```zsh
 git clone https://github.com/seriousz158/dsh-memory.git
 cd dsh-memory
-# Use the pinned runtime that this v0.3.0 integration was tested with.
+# Use the pinned runtime that this v0.3.1 integration was tested with.
 npm install --global @deepseek-ai/dsh@0.1.0-rc.7
 dsh --version
 npm ci --ignore-scripts
 ```
 
 This is a source-and-GitHub-Release project. Both workspace packages are
-intentionally marked private, so `v0.3.0` cannot be published to npm by
+intentionally marked private, so `v0.3.1` cannot be published to npm by
 accident.
 
 Install the two local packages into your DSH profile. The installer defaults to

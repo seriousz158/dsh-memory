@@ -26,11 +26,58 @@ PROCESSED_SESSIONS=0
 SKIPPED_SESSIONS=0
 
 DRY_RUN=0
-case "${1:-}" in
-  --dry-run) DRY_RUN=1 ;;
-  "") ;;
-  *) print -u2 -- "dsh-memory-sync: unexpected argument: $1"; exit 2 ;;
-esac
+PREVIEW_MODE=0
+APPLY_PREVIEW=""
+DISCARD_PREVIEW=""
+JSON_OUTPUT=0
+PREVIEW_ID=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --preview)
+      PREVIEW_MODE=1
+      PREVIEW_ID="${2:-}"
+      [[ -n "$PREVIEW_ID" ]] || { print -u2 -- "dsh-memory-sync: --preview requires a preview id"; exit 2; }
+      shift 2
+      ;;
+    --apply-preview)
+      APPLY_PREVIEW="${2:-}"
+      [[ -n "$APPLY_PREVIEW" ]] || { print -u2 -- "dsh-memory-sync: --apply-preview requires a preview id"; exit 2; }
+      shift 2
+      ;;
+    --discard-preview)
+      DISCARD_PREVIEW="${2:-}"
+      [[ -n "$DISCARD_PREVIEW" ]] || { print -u2 -- "dsh-memory-sync: --discard-preview requires a preview id"; exit 2; }
+      shift 2
+      ;;
+    --json) JSON_OUTPUT=1; shift ;;
+    *) print -u2 -- "dsh-memory-sync: unexpected argument: $1"; exit 2 ;;
+  esac
+done
+# The preview management modes are mutually exclusive with a normal sync.
+if [[ "$DRY_RUN" == "1" && "$PREVIEW_MODE" == "1" ]]; then
+  print -u2 -- "dsh-memory-sync: --dry-run and --preview are mutually exclusive"
+  exit 2
+fi
+management_modes=0
+[[ -n "$APPLY_PREVIEW" ]] && management_modes=$((management_modes + 1))
+[[ -n "$DISCARD_PREVIEW" ]] && management_modes=$((management_modes + 1))
+[[ "$PREVIEW_MODE" == "1" ]] && management_modes=$((management_modes + 1))
+if [[ "$management_modes" -gt 1 ]]; then
+  print -u2 -- "dsh-memory-sync: --preview/--apply-preview/--discard-preview are mutually exclusive"
+  exit 2
+fi
+
+PYTHON_BIN="${DPSK_PYTHON3:-python3}"
+command -v "$PYTHON_BIN" >/dev/null 2>&1 || { print -u2 -- "dsh-memory-sync: python3 is required"; exit 127; }
+
+# In --json mode every progress line is suppressed from stdout so the single
+# JSON document on stdout stays machine-parseable; diagnostics still go to stderr.
+progress() {
+  if [[ "$JSON_OUTPUT" != "1" ]]; then
+    print -- "dsh-memory-sync: $*"
+  fi
+}
 
 sync_apply() {
   /usr/bin/env -i \
@@ -90,21 +137,60 @@ done
 
 /usr/bin/env -i "${BASE_ENV[@]}" "$INITIALIZER" >/dev/null
 
+# --- Preview management modes (--apply-preview / --discard-preview) ---
+# These are short host-side operations handled before any session scan: they
+# do not start DSH or advance the watermark. --apply-preview acquires the
+# operation lock so it cannot race a normal sync; --discard-preview is a pure
+# removal and needs no lock.
+if [[ -n "$APPLY_PREVIEW" ]]; then
+  sync_apply acquire-lock --root "$DSH_MEMORY_ROOT" --operation-name preview-apply --run-id "$APPLY_PREVIEW" >/dev/null || {
+    print -u2 -- "dsh-memory-sync: another memory operation is in progress"
+    exit 1
+  }
+  apply_out="$(sync_apply apply-preview --root "$DSH_MEMORY_ROOT" --run-id "$APPLY_PREVIEW" --operation-name preview --started-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" || {
+    apply_error="$(printf '%s' "$apply_out" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null || echo preview-apply-failed)"
+    sync_apply release-lock --root "$DSH_MEMORY_ROOT" --run-id "$APPLY_PREVIEW" >/dev/null 2>&1 || true
+    print -u2 -- "dsh-memory-sync: preview apply failed: $apply_error"
+    exit 1
+  }
+  sync_apply remove-preview --root "$DSH_MEMORY_ROOT" --run-id "$APPLY_PREVIEW" >/dev/null 2>&1 || true
+  sync_apply release-lock --root "$DSH_MEMORY_ROOT" --run-id "$APPLY_PREVIEW" >/dev/null 2>&1 || true
+  echo "dsh-memory-sync: preview $APPLY_PREVIEW applied."
+  exit 0
+fi
+if [[ -n "$DISCARD_PREVIEW" ]]; then
+  discard_out="$(sync_apply remove-preview --root "$DSH_MEMORY_ROOT" --run-id "$DISCARD_PREVIEW")" || {
+    print -u2 -- "dsh-memory-sync: preview discard failed: preview not found"
+    exit 1
+  }
+  removed="$(printf '%s' "$discard_out" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["value"]["removed"])' 2>/dev/null || echo false)"
+  if [[ "$removed" != "True" ]]; then
+    print -u2 -- "dsh-memory-sync: preview discard failed: preview not found"
+    exit 1
+  fi
+  echo "dsh-memory-sync: preview $DISCARD_PREVIEW discarded."
+  exit 0
+fi
+
 # Zero-cost guard: nothing new since the last sync exits before any DSH run.
 if [[ -f "$MARKER" ]]; then
   NEW=$(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$MARKER" ! -newermt '-1 hour' 2>/dev/null | wc -l | tr -d ' ')
   CANDIDATE_SESSIONS="$NEW"
   if [[ "$NEW" == "0" ]]; then
     if [[ "$DRY_RUN" == "1" ]]; then
-      echo "dsh-memory-sync: dry-run: no new idle session logs since $(stat -f '%Sm' "$MARKER"), nothing to do."
+      if [[ "$JSON_OUTPUT" == "1" ]]; then
+        printf '{"ok":true,"dryRun":true,"candidateSessions":0,"changedPaths":[],"message":"no new idle session logs"}\n'
+      else
+        echo "dsh-memory-sync: dry-run: no new idle session logs since $(stat -f '%Sm' "$MARKER"), nothing to do."
+      fi
     else
       echo "dsh-memory-sync: no new idle session logs since $(stat -f '%Sm' "$MARKER"), nothing to do."
     fi
     exit 0
   fi
-  echo "dsh-memory-sync: $NEW new idle session log(s), starting headless consolidation…"
+  progress "$NEW new idle session log(s), starting headless consolidation…"
 else
-  echo "dsh-memory-sync: first run — marker will be created, historical sessions skipped."
+  progress "first run — marker will be created, historical sessions skipped."
 fi
 
 DSH_EXECUTABLE="$(command -v -- "$DSH_BIN" 2>/dev/null || true)"
@@ -115,9 +201,6 @@ if [[ -z "$DSH_EXECUTABLE" || ! -x "$DSH_EXECUTABLE" ]]; then
 fi
 
 [[ -f "$SYNC_APPLY" ]] || { print -u2 -- "dsh-memory-sync: sync helper is missing: $SYNC_APPLY"; exit 127; }
-
-PYTHON_BIN="${DPSK_PYTHON3:-python3}"
-command -v "$PYTHON_BIN" >/dev/null 2>&1 || { print -u2 -- "dsh-memory-sync: python3 is required"; exit 127; }
 
 START_TS=$(date +%s)
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-$(/usr/bin/uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-' | cut -c1-8)
@@ -150,7 +233,7 @@ if [[ "$DRY_RUN" == "0" ]]; then
   }
   recovered="$(printf '%s' "$recover_output" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["value"]["recovered"])')"
   if [[ "$recovered" == "True" ]]; then
-    echo "dsh-memory-sync: recovered an interrupted run; see the run journal."
+    progress "recovered an interrupted run; see the run journal."
   fi
   sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
     --phase staging --started-at "$STARTED_AT" >/dev/null
@@ -230,18 +313,59 @@ difference="$(sync_apply diff --staging "$STAGING" --manifest "$MANIFEST")" || {
 }
 
 changed_paths="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["added"]+d["modified"]+d["deleted"])))')"
+diff_added="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["added"])))')"
+diff_modified="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["modified"])))')"
+diff_deleted="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["deleted"])))')"
+diff_bytes="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["value"].get("changed_bytes", 0))')"
+json_list() { [[ -z "$1" ]] && printf '[]' || printf '[%s]' "$(printf '%s' "$1" | /usr/bin/sed 's/\([^,]*\)/"\1"/g')"; }
 
 if [[ -z "$changed_paths" ]]; then
-  echo "dsh-memory-sync: no memory changes, nothing to apply."
-  if [[ "$DRY_RUN" == "1" ]]; then
-    echo "dsh-memory-sync: dry-run: no changes would be applied."
+  if [[ "$DRY_RUN" == "1" && "$JSON_OUTPUT" == "1" ]]; then
+    printf '{"ok":true,"dryRun":true,"candidateSessions":%s,"changedPaths":[],"message":"no changes"}\n' "$CANDIDATE_SESSIONS"
+  else
+    echo "dsh-memory-sync: no memory changes, nothing to apply."
+    if [[ "$DRY_RUN" == "1" ]]; then
+      echo "dsh-memory-sync: dry-run: no changes would be applied."
+    fi
   fi
   rm -rf -- "$STAGING_PARENT"
   exit 0
 fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
-  echo "dsh-memory-sync: dry-run — would apply: $changed_paths"
+  if [[ "$JSON_OUTPUT" == "1" ]]; then
+    printf '{"ok":true,"dryRun":true,"candidateSessions":%s,"changedPaths":%s,"added":%s,"modified":%s,"deleted":%s,"changedBytes":%s}\n' \
+      "$CANDIDATE_SESSIONS" "$(json_list "$changed_paths")" "$(json_list "$diff_added")" "$(json_list "$diff_modified")" "$(json_list "$diff_deleted")" "$diff_bytes"
+  else
+    echo "dsh-memory-sync: dry-run — would apply: $changed_paths"
+  fi
+  rm -rf -- "$STAGING_PARENT"
+  exit 0
+fi
+
+# --- Preview mode: stage the candidate diff under .sync/previews/<id> and
+# leave it pending. Nothing is applied, journaled, or committed here; the
+# model edit is captured so an operator can review and apply it later.
+if [[ "$PREVIEW_MODE" == "1" ]]; then
+  sync_apply prepare-preview --root "$DSH_MEMORY_ROOT" --run-id "$PREVIEW_ID" >/dev/null || {
+    print -u2 -- "dsh-memory-sync: preview prepare failed"
+    rm -rf -- "$STAGING_PARENT"
+    exit 1
+  }
+  preview_root="$DSH_MEMORY_ROOT/.sync/previews/$PREVIEW_ID"
+  # Copy the staged payload (baseline + model edits) into the preview staging.
+  rm -rf -- "$preview_root/staging"
+  cp -R -- "$STAGING" "$preview_root/staging"
+  chmod -R 700 "$preview_root/staging" 2>/dev/null || true
+  PREVIEW_EXPIRES=$(date -u -v+7d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+7 days' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+  preview_meta="{\"preview_id\":\"$PREVIEW_ID\",\"created_at\":\"$STARTED_AT\",\"expires_at\":\"$PREVIEW_EXPIRES\",\"candidate_sessions\":$CANDIDATE_SESSIONS,\"changed_paths\":[$(printf '%s' "$changed_paths" | /usr/bin/sed 's/\([^,]*\)/"\1"/g')],\"status\":\"pending\"}"
+  sync_apply write-preview --root "$DSH_MEMORY_ROOT" --run-id "$PREVIEW_ID" --preview-json "$preview_meta" >/dev/null || {
+    print -u2 -- "dsh-memory-sync: preview write failed"
+    rm -rf -- "$STAGING_PARENT"
+    exit 1
+  }
+  echo "dsh-memory-sync: preview $PREVIEW_ID created (pending, expires $PREVIEW_EXPIRES)."
+  echo "dsh-memory-sync: changed: $changed_paths"
   rm -rf -- "$STAGING_PARENT"
   exit 0
 fi

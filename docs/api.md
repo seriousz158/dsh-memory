@@ -276,3 +276,63 @@ Failures use stable codes:
 The rollback commit restores the payload to the run's recovery commit tree,
 preserves `.sync` and `.last-sync`, and records the rollback itself in the
 journal. It never uses `reset`, force update, or history deletion.
+
+### `memory.previews()` (v0.3.1)
+
+Lists pending (non-expired) previews, newest first:
+
+```json
+{
+  "ok": true,
+  "value": {
+    "previews": [
+      {
+        "preview_id": "20260820T150000Z-a1b2c3d4",
+        "created_at": "2026-08-20T15:00:00Z",
+        "expires_at": "2026-08-27T15:00:00Z",
+        "candidate_sessions": 1,
+        "changed_paths": ["handbook/preferences.md"],
+        "status": "pending"
+      }
+    ]
+  }
+}
+```
+
+Previews are created by `dsh-memory-sync --preview <id>`, which captures the
+candidate diff (baseline + model edits) under `<root>/.sync/previews/<id>`
+without applying anything. Expired previews are never listed and cannot be
+applied.
+
+### `memory.applyPreview({ previewId })` (v0.3.1)
+
+Applies a pending preview's staged payload as a normal sync transaction
+(recovery + apply commits), consumes the preview, and journals the run under
+`operation: "preview"`:
+
+```json
+{
+  "ok": true,
+  "value": {
+    "status": "applied",
+    "previewId": "20260820T150000Z-a1b2c3d4",
+    "changed_paths": ["handbook/preferences.md"],
+    "recovery_commit": "...",
+    "apply_commit": "...",
+    "journaled": true
+  }
+}
+```
+
+Failures use `preview-invalid-request`, `preview-not-found`, `preview-expired`,
+`live-memory-changed`, `operation-in-progress`, or `preview-apply-failed`.
+
+### `memory.discardPreview({ previewId })` (v0.3.1)
+
+Removes a pending preview without applying it:
+
+```json
+{ "ok": true, "value": { "removed": true, "previewId": "20260820T150000Z-a1b2c3d4" } }
+```
+
+Failures use `preview-invalid-request` or `preview-not-found`.

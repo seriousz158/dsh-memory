@@ -2,6 +2,39 @@
 
 All notable changes to this project are documented here.
 
+## [0.3.1] - 2026-08-20
+
+### Added
+
+- `dsh-memory-sync --preview <id>` captures a candidate diff as a pending
+  preview under `<root>/.sync/previews/<id>` (7-day expiry) without applying.
+- `dsh-memory-sync --apply-preview <id>` applies a pending preview as a normal
+  sync transaction and journals it under `operation: preview`; the preview is
+  consumed on success.
+- `dsh-memory-sync --discard-preview <id>` removes a pending preview.
+- `dsh-memory-sync --dry-run --json` emits a single machine-parseable JSON
+  report with all progress lines suppressed from stdout.
+- `memory.previews()`, `memory.applyPreview()`, and `memory.discardPreview()`
+  host APIs, plus settings-UI preview list with apply/discard actions.
+- `prepare-preview` now seeds the preview staging from the live payload tree
+  (baseline + directory skeleton + manifest), so an applied preview is a
+  complete transaction.
+- Helper error envelopes are recovered from non-zero helper exits (stdout JSON)
+  instead of collapsing to a generic failure code.
+
+### Compatibility
+
+- DSH `0.1.0-rc.6` remains within the declared peer range.
+- DSH `0.1.0-rc.7` is the reproducible clean-room and locally integrated
+  baseline.
+
+### Safety
+
+- A preview apply acquires the operation lock, so it cannot race a normal sync.
+- Applying a preview never touches the watermark (`.last-sync`); a later normal
+  sync still sees the sessions that produced the preview.
+- Expired previews are never listed and cannot be applied.
+
 ## [0.3.0] - 2026-08-20
 
 ### Added

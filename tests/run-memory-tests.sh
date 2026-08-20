@@ -13,6 +13,7 @@ node tests/test_dsh_memory_sync_transaction.mjs
 node tests/test_dsh_memory_operation_lock.mjs
 node tests/test_dsh_memory_metadata.mjs
 node tests/test_dsh_memory_paths.mjs
+node tests/test_dsh_memory_preview.mjs
 node tests/test_dsh_memory_redaction.mjs
 zsh tests/test_dsh_memory_runtime.sh
 zsh tests/test_dsh_memory_ui_settings_row.sh
@@ -22,4 +23,5 @@ zsh tests/test_dsh_memory_sync_disabled.sh
 zsh tests/test_dsh_memory_sync_env.sh
 zsh tests/test_dsh_memory_sync_dry_run.sh
 zsh tests/test_dsh_memory_sync_lock.sh
+zsh tests/test_dsh_memory_sync_preview.sh
 zsh tests/test_dsh_memory_migrate.sh

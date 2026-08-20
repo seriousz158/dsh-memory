@@ -22,6 +22,9 @@ window.__ModuleLoader__.load({
       { id: "dsh-memory#memory/clear", service: "memory", namespace: "memory", method: "clear", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict((value) => { if (!value || value.confirmation !== "DELETE_MEMORY") throw new Error("invalid clear request"); return value; }) }], result: strict(result) },
       { id: "dsh-memory#memory/runs", service: "memory", namespace: "memory", method: "runs", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict((value) => { if (value !== undefined && value !== null && typeof value !== "object") throw new Error("invalid runs request"); return value; }) }], result: strict(result) },
       { id: "dsh-memory#memory/rollback", service: "memory", namespace: "memory", method: "rollback", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict(rollbackRequest) }], result: strict(result) },
+      { id: "dsh-memory#memory/previews", service: "memory", namespace: "memory", method: "previews", invocation: { kind: "direct" }, parameters: [], result: strict(result) },
+      { id: "dsh-memory#memory/applyPreview", service: "memory", namespace: "memory", method: "applyPreview", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict((value) => { if (!value || typeof value.previewId !== "string" || value.previewId.length === 0) throw new Error("invalid apply-preview request"); return value; }) }], result: strict(result) },
+      { id: "dsh-memory#memory/discardPreview", service: "memory", namespace: "memory", method: "discardPreview", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict((value) => { if (!value || typeof value.previewId !== "string" || value.previewId.length === 0) throw new Error("invalid discard-preview request"); return value; }) }], result: strict(result) },
     ] };
     const css = ".dshmu_row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--dsw-alias-border-l2,#eee)}.dshmu_text,.dshmu_clear{min-width:0;display:flex;flex-direction:column;gap:4px}.dshmu_title{font:var(--dsw-font-s-strong-14,14px sans-serif);font-weight:600}.dshmu_desc,.dshmu_status{font:var(--dsw-font-xs-13,12px sans-serif);color:var(--dsw-alias-label-caption,#888)}.dshmu_error{color:var(--dsw-alias-state-danger,#c53b37)}.dshmu_switch{width:38px;height:22px;border-radius:999px;border:0;cursor:pointer;position:relative;background:#ddd}.dshmu_switch[aria-checked=true]{background:var(--dsw-static-deepseek-500,#4d6bfe)}.dshmu_switch:disabled,.dshmu_button:disabled{opacity:.5;cursor:default}.dshmu_knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff}.dshmu_switch[aria-checked=true] .dshmu_knob{left:18px}.dshmu_button{align-self:flex-start;border:0;border-radius:6px;padding:6px 10px;color:#fff;background:var(--dsw-alias-state-danger,#c53b37);cursor:pointer}.dshmu_input{padding:6px;border:1px solid var(--dsw-alias-border-l2,#ddd);border-radius:6px}";
     const tagId = "dsh-memory-ui/style.css";
@@ -109,6 +112,50 @@ window.__ModuleLoader__.load({
                 setRollbackBusy(false);
               }
             };
+            const [previewList, setPreviewList] = react.useState(null);
+            const [previewBusy, setPreviewBusy] = react.useState(false);
+            const [previewAction, setPreviewAction] = react.useState(null);
+            react.useEffect(() => {
+              let disposed = false;
+              const load = async () => {
+                try {
+                  const answer = operationResult(await memory.previews());
+                  if (!disposed) setPreviewList(answer.ok ? answer.value.previews : null);
+                } catch {
+                  if (!disposed) setPreviewList(null);
+                }
+              };
+              void load();
+              return () => { disposed = true; };
+            }, [repositoryRevision]);
+            const applyPreview = async (previewId) => {
+              if (!window.confirm(`应用预览 ${previewId}？其暂存内容将写入记忆库。`)) return;
+              setPreviewBusy(true); setPreviewAction(null);
+              try {
+                const answer = operationResult(await memory.applyPreview({ previewId }));
+                if (!answer.ok) return setPreviewAction({ error: answer.error.code });
+                setPreviewAction({ success: `已应用预览 ${previewId}` });
+                setRepositoryRevision((revision) => revision + 1);
+              } catch {
+                setPreviewAction({ error: "preview-apply-failed" });
+              } finally {
+                setPreviewBusy(false);
+              }
+            };
+            const discardPreview = async (previewId) => {
+              if (!window.confirm(`丢弃预览 ${previewId}？其暂存内容将被删除。`)) return;
+              setPreviewBusy(true); setPreviewAction(null);
+              try {
+                const answer = operationResult(await memory.discardPreview({ previewId }));
+                if (!answer.ok) return setPreviewAction({ error: answer.error.code });
+                setPreviewAction({ success: `已丢弃预览 ${previewId}` });
+                setRepositoryRevision((revision) => revision + 1);
+              } catch {
+                setPreviewAction({ error: "preview-discard-failed" });
+              } finally {
+                setPreviewBusy(false);
+              }
+            };
             const clear = async () => {
               if (stage < 2) return setStage(stage + 1);
               setBusy(true); setState(null);
@@ -145,6 +192,18 @@ window.__ModuleLoader__.load({
                 jsx.jsx("span", { className: "dshmu_status", children: repository?.value?.lastRun ? `状态：${repository.value.lastRun.status}；变更 ${repository.value.lastRun.changedFileCount ?? 0} 个文件；apply ${repository.value.lastRun.applyCommit ? repository.value.lastRun.applyCommit.slice(0, 8) : "-"}` : "尚无同步记录" }),
                 (repository?.value?.lastRun && repository.value.lastRun.status === "applied") && jsx.jsx("button", { type: "button", className: "dshmu_button", disabled: !available || rollbackBusy, onClick: rollback, children: rollbackBusy ? "正在回滚…" : "回滚本次同步" }),
                 rollbackState && jsx.jsx("span", { className: rollbackState.error ? "dshmu_status dshmu_error" : "dshmu_status", children: rollbackState.error ? `回滚失败：${rollbackState.error}` : rollbackState.success }),
+              ] }),
+              jsx.jsxs("div", { className: "dshmu_clear", children: [
+                jsx.jsx("span", { className: "dshmu_title", children: "待应用预览" }),
+                jsx.jsx("span", { className: "dshmu_status", children: previewList === null ? "正在读取预览…" : previewList.length === 0 ? "暂无待应用预览" : `共 ${previewList.length} 个待应用预览` }),
+                previewList && previewList.map((preview) => jsx.jsxs("div", { className: "dshmu_clear", children: [
+                  jsx.jsx("span", { className: "dshmu_status", children: `${preview.preview_id}：${(preview.changed_paths ?? []).join(", ") || "无变更"}` }),
+                  jsx.jsx("div", { className: "dshmu_clear", children: [
+                    jsx.jsx("button", { type: "button", className: "dshmu_button", disabled: !available || previewBusy, onClick: () => applyPreview(preview.preview_id), children: previewBusy ? "处理中…" : "应用" }),
+                    jsx.jsx("button", { type: "button", className: "dshmu_button", disabled: !available || previewBusy, onClick: () => discardPreview(preview.preview_id), children: previewBusy ? "处理中…" : "丢弃" }),
+                  ] }),
+                ] }, preview.preview_id)),
+                previewAction && jsx.jsx("span", { className: previewAction.error ? "dshmu_status dshmu_error" : "dshmu_status", children: previewAction.error ? `预览操作失败：${previewAction.error}` : previewAction.success }),
               ] }),
             ] });
           }

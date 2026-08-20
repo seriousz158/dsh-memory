@@ -269,6 +269,38 @@ def prepare_preview(root, preview_id):
     else:
         os.mkdir(staging, mode=0o700)
     os.chmod(staging, 0o700)
+    # Seed the staging payload from the live tree and a baseline manifest
+    # exactly like stage-copy does, so a later apply-preview runs the normal
+    # transaction against a complete baseline.
+    root_fd = open_root(root)
+    try:
+        staging_fd = os.open(staging, os.O_RDONLY | DIRECTORY | NOFOLLOW)
+        try:
+            for directory in PAYLOAD_NAMES[1:]:
+                if lstat_at(staging_fd, directory) is None:
+                    os.mkdir(directory, mode=0o700, dir_fd=staging_fd)
+            for relative, entry_stat in walk_live_tree(root_fd):
+                file_fd = open_regular(root_fd, relative)
+                try:
+                    copy_relative(staging_fd, relative, file_fd)
+                finally:
+                    os.close(file_fd)
+        finally:
+            os.close(staging_fd)
+        head_sha = None
+        try:
+            head_sha = git(root, ["rev-parse", "HEAD"]).decode("ascii", "strict").strip()
+        except SyncError:
+            pass
+        manifest = {
+            "schema_version": 1,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "head_sha": head_sha,
+            "entries": snapshot_manifest(root_fd),
+        }
+        write_atomic_path(paths["manifest"], json.dumps(manifest, separators=(",", ":")) + "\n", 0o600)
+    finally:
+        os.close(root_fd)
     return {"preview_id": preview_id, **paths}
 
 
@@ -298,6 +330,64 @@ def read_preview(root, preview_id):
         return json.loads(read_text(paths["metadata"]))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
+
+
+def is_preview_expired(preview, now=None):
+    expires_at = preview.get("expires_at") if isinstance(preview, dict) else None
+    if not isinstance(expires_at, str):
+        return True
+    try:
+        expires = calendar.timegm(time.strptime(expires_at, "%Y-%m-%dT%H:%M:%SZ"))
+    except (ValueError, OverflowError):
+        return True
+    return time.time() >= expires if now is None else now >= expires
+
+
+def list_previews(root):
+    """Return pending (non-expired) preview metadata, newest first."""
+    root_fd = open_root(root)
+    try:
+        sync_fd = open_sync_directory(root_fd, create=False)
+        if sync_fd is None:
+            return []
+        try:
+            entry_stat = lstat_at(sync_fd, "previews")
+            if entry_stat is None or stat.S_ISLNK(entry_stat.st_mode) or not stat.S_ISDIR(entry_stat.st_mode):
+                raise SyncError("unsafe-layout")
+            previews_fd = open_directory(sync_fd, "previews")
+            try:
+                previews = []
+                for name in os.listdir(previews_fd):
+                    if not RUN_ID_RE.fullmatch(name):
+                        continue
+                    metadata = read_preview(root, name)
+                    if metadata is None or metadata.get("preview_id") != name:
+                        continue
+                    if not is_preview_expired(metadata):
+                        previews.append(metadata)
+            finally:
+                os.close(previews_fd)
+        finally:
+            os.close(sync_fd)
+    finally:
+        os.close(root_fd)
+    return sorted(previews, key=lambda preview: str(preview.get("created_at", "")), reverse=True)
+
+
+def apply_preview(root, preview_id, run_id, started_at):
+    """Apply a pending preview's staged payload with the normal apply
+    transaction, then leave the preview on disk for the caller to clean up."""
+    metadata = read_preview(root, preview_id)
+    if metadata is None:
+        raise SyncError("preview-not-found")
+    if is_preview_expired(metadata):
+        raise SyncError("preview-expired")
+    paths = preview_paths(root, preview_id, create=False)
+    if paths is None:
+        raise SyncError("preview-not-found")
+    if not os.path.isdir(paths["staging"]) or os.path.islink(paths["staging"]):
+        raise SyncError("preview-not-found")
+    return apply_transaction(root, paths["staging"], paths["manifest"], run_id, started_at)
 
 
 def remove_preview(root, preview_id):
@@ -1027,6 +1117,7 @@ def main():
         "stage-copy", "verify-staging", "diff", "mirror-payload", "apply", "journal", "finalize",
         "acquire-lock", "release-lock", "write-active", "clear-active",
         "prepare-preview", "write-preview", "read-preview", "remove-preview", "recover-active",
+        "apply-preview", "list-previews",
     ))
     parser.add_argument("--root")
     parser.add_argument("--staging")
@@ -1079,6 +1170,13 @@ def main():
         return {"ok": True, "value": read_preview(args.root, args.run_id)}
     if args.operation == "remove-preview":
         return {"ok": True, "value": remove_preview(args.root, args.run_id)}
+    if args.operation == "apply-preview":
+        result = apply_preview(
+            args.root, args.run_id, args.operation_name or "preview", args.started_at,
+        )
+        return result if result.get("ok") is not None else {"ok": True, "value": result}
+    if args.operation == "list-previews":
+        return {"ok": True, "value": {"previews": list_previews(args.root)}}
     if args.operation == "recover-active":
         return {"ok": True, "value": recover_active(args.root)}
     if args.operation == "stage-copy":

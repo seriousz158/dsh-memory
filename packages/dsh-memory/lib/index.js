@@ -27,6 +27,7 @@ export const DEFAULT_MEMORY_ROOT = resolve(
   process.env.DSH_MEMORY_ROOT || join(DEFAULT_DSH_HOME, "storages", "memory"),
 );
 const SAFE_CLEAR_SCRIPT = fileURLToPath(new URL("./safe-clear.py", import.meta.url));
+const SYNC_APPLY_SCRIPT = fileURLToPath(new URL("./sync-apply.py", import.meta.url));
 const PYTHON_CANDIDATES = Object.freeze([
   process.env.DPSK_PYTHON3,
   "/opt/homebrew/opt/python@3.11/libexec/bin/python3",
@@ -119,6 +120,43 @@ async function safeClear(root, operation, token = undefined) {
     }
   }
   throw Object.assign(new Error("Python 3 is unavailable for the memory safety helper"), { memoryCode: "repo-unavailable", cause: unavailable });
+}
+/** Invoke the FD-anchored sync apply helper for a host-side operation. */
+async function invokeSyncApply(operation, args = {}) {
+  const argv = [SYNC_APPLY_SCRIPT, operation];
+  for (const [key, value] of Object.entries(args)) {
+    if (value === undefined || value === null) continue;
+    argv.push(`--${key}`, String(value));
+  }
+  let unavailable;
+  for (const python of PYTHON_CANDIDATES) {
+    try {
+      const output = await execFile(python, argv, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+      const result = JSON.parse(output.stdout);
+      if (result?.ok === true) return result.value;
+      if (typeof result?.error?.code === "string") throw memoryError(result.error.code);
+      throw memoryError("sync-failed");
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        unavailable = error;
+        continue;
+      }
+      // The helper exits non-zero on SyncError but still writes the error
+      // envelope to stdout; recover the machine code instead of collapsing to
+      // a generic sync-failed.
+      if (typeof error?.stdout === "string") {
+        try {
+          const failed = JSON.parse(error.stdout);
+          if (typeof failed?.error?.code === "string") throw memoryError(failed.error.code);
+        } catch (parseError) {
+          if (parseError?.memoryCode) throw parseError;
+        }
+      }
+      if (error?.memoryCode) throw error;
+      throw memoryError("sync-failed");
+    }
+  }
+  throw Object.assign(new Error("Python 3 is unavailable for the memory sync helper"), { memoryCode: "sync-unavailable", cause: unavailable });
 }
 /** A browser can never choose this path. Test roots require __testOnly. */
 export class MemoryRepository {
@@ -466,6 +504,82 @@ export class MemoryRepository {
     }
   }
 
+  /** List pending (non-expired) previews, newest first. */
+  async previews() {
+    try {
+      const root = await this.inspect();
+      return success({ previews: await this.validPendingPreviews(root) });
+    } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
+  }
+
+  /**
+   * Apply a pending preview's staged payload as a normal sync transaction.
+   * The preview is consumed: its payload becomes the live memory tree and the
+   * preview record is removed. Returns the same shape as a sync apply.
+   */
+  async applyPreview(request) {
+    if (request?.previewId === undefined || typeof request.previewId !== "string" || request.previewId.length === 0) {
+      return failure("preview-invalid-request");
+    }
+    let root;
+    try { root = await this.inspect(); } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
+    const operationId = operationRunId("preview-apply");
+    let lockAcquired = false;
+    try {
+      await acquireOperationLock(root, { operation: "preview-apply", runId: operationId });
+      lockAcquired = true;
+      const startedAt = new Date().toISOString();
+      const value = await invokeSyncApply("apply-preview", {
+        root,
+        "run-id": request.previewId,
+        "operation-name": "preview",
+        "started-at": startedAt,
+      });
+      // Consume the preview and journal the apply under the preview id so the
+      // run is auditable and rollbackable like any other sync.
+      await invokeSyncApply("remove-preview", { root, "run-id": request.previewId }).catch(() => null);
+      const record = {
+        schema_version: 1,
+        run_id: request.previewId,
+        operation: "preview",
+        status: value.status ?? "applied",
+        started_at: startedAt,
+        finished_at: new Date().toISOString(),
+        candidate_sessions: value.candidate_sessions ?? 0,
+        processed_sessions: value.processed_sessions ?? 0,
+        skipped_sessions: 0,
+        changed_paths: value.changed_paths ?? [],
+        recovery_commit: value.recovery_commit ?? null,
+        apply_commit: value.apply_commit ?? null,
+        error_code: null,
+      };
+      await this.writeRun(root, record);
+      return success({ ...value, previewId: request.previewId, journaled: true });
+    } catch (error) {
+      return failure(error?.memoryCode ?? "preview-apply-failed");
+    } finally {
+      if (lockAcquired) {
+        await clearActiveRun(root, operationId).catch(() => {});
+        await releaseOperationLock(root, operationId).catch(() => {});
+      }
+    }
+  }
+
+  /** Remove a pending preview without applying it. */
+  async discardPreview(request) {
+    if (request?.previewId === undefined || typeof request.previewId !== "string" || request.previewId.length === 0) {
+      return failure("preview-invalid-request");
+    }
+    try {
+      const root = await this.inspect();
+      const value = await invokeSyncApply("remove-preview", { root, "run-id": request.previewId });
+      if (value?.removed !== true) return failure("preview-not-found");
+      return success({ removed: true, previewId: request.previewId });
+    } catch (error) {
+      return failure(error?.memoryCode ?? "preview-not-found");
+    }
+  }
+
   async writeRun(root, record) {
     await mkdirSafe(join(root, ".sync", "runs"));
     const body = JSON.stringify(record, null, 2) + "\n";
@@ -606,6 +720,9 @@ export class MemoryService extends TypertRemoteService {
   async clear(request) { return await this.repository.clear(request); }
   async runs(request) { return await this.repository.runs(request); }
   async rollback(request) { return await this.repository.rollback(request); }
+  async previews() { return await this.repository.previews(); }
+  async applyPreview(request) { return await this.repository.applyPreview(request); }
+  async discardPreview(request) { return await this.repository.discardPreview(request); }
 }
 decorate(MemoryService, "getSettings", Remote("getSettings"));
 decorate(MemoryService, "setEnabled", Remote("setEnabled"));
@@ -614,6 +731,9 @@ decorate(MemoryService, "health", Remote("health"));
 decorate(MemoryService, "clear", Remote("clear"));
 decorate(MemoryService, "runs", Remote("runs"));
 decorate(MemoryService, "rollback", Remote("rollback"));
+decorate(MemoryService, "previews", Remote("previews"));
+decorate(MemoryService, "applyPreview", Remote("applyPreview"));
+decorate(MemoryService, "discardPreview", Remote("discardPreview"));
 
 export function apply(ctx, entry) {
   const settings = new MemorySettingsBridge();
