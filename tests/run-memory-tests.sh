@@ -27,3 +27,11 @@ zsh tests/test_dsh_memory_sync_lock.sh
 zsh tests/test_dsh_memory_sync_preview.sh
 zsh tests/test_dsh_memory_backup.sh
 zsh tests/test_dsh_memory_migrate.sh
+
+# Browser E2E against an isolated DSH profile. Requires the Python Playwright
+# installation used for browser acceptance; skipped (exit 0) when unavailable.
+if command -v python3 >/dev/null 2>&1; then
+  python3 tests/test_dsh_memory_e2e_ui.py
+else
+  print -u2 -- "dsh-memory e2e: python3 unavailable; skipping"
+fi

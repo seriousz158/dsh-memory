@@ -67,6 +67,8 @@ const allowed = new Set([
   "packages/dsh-memory-ui/lib/client.js",
   "packages/dsh-memory-ui/lib/index.js",
   "tests/run-memory-tests.sh",
+  "tests/helpers/dsh-e2e-service.mjs",
+  "tests/test_dsh_memory_e2e_ui.py",
   "tests/test_dsh_memory_init.sh",
   "tests/test_dsh_memory_install.sh",
   "tests/test_dsh_memory_metadata.mjs",
