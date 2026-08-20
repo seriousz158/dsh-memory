@@ -52,6 +52,17 @@ async function invokePython(operation, args = {}) {
         unavailable = error;
         continue;
       }
+      // The helper exits non-zero on SyncError but still writes the error
+      // envelope to stdout; recover the machine code instead of collapsing to
+      // a generic sync-failed.
+      if (typeof error?.stdout === "string") {
+        try {
+          const failed = JSON.parse(error.stdout);
+          if (typeof failed?.error?.code === "string") throw syncError(failed.error.code);
+        } catch (parseError) {
+          if (parseError?.memoryCode) throw parseError;
+        }
+      }
       if (error?.memoryCode) throw error;
       throw syncError("sync-failed");
     }

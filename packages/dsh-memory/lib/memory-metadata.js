@@ -33,7 +33,13 @@ export const STATUSES = Object.freeze([
 
 export const CONFIDENCES = Object.freeze(["high", "medium", "low", "unknown"]);
 
-export const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
+/**
+ * A record id is a lowercase slug, optionally namespaced with `/`:
+ *   project/codegen-style     (namespace/name)
+ *   user/preferences          (namespace/name)
+ * Each segment is `[a-z0-9][a-z0-9-]*`; at most one namespace separator.
+ */
+export const ID_RE = /^[a-z0-9][a-z0-9-]*(\/[a-z0-9][a-z0-9-]*)?$/;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const LIST_ITEM_RE = /^[ \t]+-\s+(.+)$/;
@@ -156,6 +162,16 @@ export function parseFrontMatter(content, relativePath) {
   if (raw.source_rollouts !== undefined && !validSourceRollouts(raw.source_rollouts)) {
     throw new MetadataError("invalid-metadata", `${relativePath} has out-of-tree source_rollouts`);
   }
+  for (const field of ["source_hash", "created_by"]) {
+    if (raw[field] !== undefined && (typeof raw[field] !== "string" || raw[field].length === 0 || raw[field].length > 128)) {
+      throw new MetadataError("invalid-metadata", `${relativePath} has an invalid ${field}`);
+    }
+  }
+  for (const field of ["review_after", "expires_at"]) {
+    if (raw[field] !== undefined && !isValidDate(raw[field])) {
+      throw new MetadataError("invalid-metadata", `${relativePath} has an invalid ${field}`);
+    }
+  }
   return {
     schema_version: SCHEMA_VERSION,
     id: raw.id,
@@ -166,12 +182,20 @@ export function parseFrontMatter(content, relativePath) {
     updated_at: raw.updated_at ?? todayUtc(),
     tags: raw.tags ?? [],
     source_rollouts: raw.source_rollouts ?? [],
+    source_hash: raw.source_hash ?? null,
+    created_by: raw.created_by ?? null,
+    review_after: raw.review_after ?? null,
+    expires_at: raw.expires_at ?? null,
   };
 }
 
 /** Render canonical front matter for a metadata object. */
 export function renderFrontMatter(metadata) {
   const lines = ["---", `schema_version: ${SCHEMA_VERSION}`, `id: ${metadata.id}`, `type: ${metadata.type}`, `status: ${metadata.status}`, `confidence: ${metadata.confidence}`, `created_at: ${metadata.created_at}`, `updated_at: ${metadata.updated_at}`];
+  if (metadata.source_hash !== undefined && metadata.source_hash !== null) lines.push(`source_hash: ${metadata.source_hash}`);
+  if (metadata.created_by !== undefined && metadata.created_by !== null) lines.push(`created_by: ${metadata.created_by}`);
+  if (metadata.review_after !== undefined && metadata.review_after !== null) lines.push(`review_after: ${metadata.review_after}`);
+  if (metadata.expires_at !== undefined && metadata.expires_at !== null) lines.push(`expires_at: ${metadata.expires_at}`);
   if ((metadata.tags ?? []).length > 0) {
     lines.push("tags:");
     for (const tag of metadata.tags) lines.push(`  - ${tag}`);
@@ -186,4 +210,63 @@ export function renderFrontMatter(metadata) {
 
 export function todayUtc() {
   return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Lazy expiry projection: a record with an `expires_at` earlier than `now`
+ * is considered expired without rewriting the file. Expired records are
+ * excluded from active views and conflict resolution, but their front matter
+ * is untouched until a later consolidation explicitly archives or removes
+ * them.
+ */
+export function isExpired(metadata, now = Date.now()) {
+  const expiresAt = metadata?.expires_at;
+  if (typeof expiresAt !== "string") return false;
+  const parsed = Date.parse(`${expiresAt}T00:00:00Z`);
+  return Number.isFinite(parsed) && parsed <= now;
+}
+
+/** Human-readable remaining validity for a record, or null when not expiring. */
+export function expiresInDays(metadata, now = Date.now()) {
+  const expiresAt = metadata?.expires_at;
+  if (typeof expiresAt !== "string") return null;
+  const parsed = Date.parse(`${expiresAt}T00:00:00Z`);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(0, Math.ceil((parsed - now) / 86_400_000));
+}
+
+/**
+ * Deterministic conflict key: records about the same topic share it, so the
+ * host can decide which of several candidates wins without model judgment.
+ * The topic is the record's type plus its namespace (the id's first segment,
+ * or the empty namespace for a plain id).
+ */
+export function topicKey(metadata) {
+  const type = metadata?.type ?? "observation";
+  const slash = typeof metadata?.id === "string" ? metadata.id.indexOf("/") : -1;
+  const namespace = slash === -1 ? "" : metadata.id.slice(0, slash);
+  return `${type}:${namespace}`;
+}
+
+/**
+ * Deterministic conflict resolution. Given records that share a topicKey,
+ * pick the winner in a stable order that never depends on file order:
+ *   1. expired records never win (lazy expiry projection);
+ *   2. status precedence active > candidate > conflicted > superseded >
+ *      archived;
+ *   3. newest updated_at wins;
+ *   4. lexicographically smallest id breaks the tie.
+ * Returns the winning record, or null when no record is eligible.
+ */
+export function resolveTopicConflict(records, now = Date.now()) {
+  const eligible = records.filter((record) => !isExpired(record, now));
+  if (eligible.length === 0) return null;
+  const precedence = Object.freeze({ active: 0, candidate: 1, conflicted: 2, superseded: 3, archived: 4 });
+  return [...eligible].sort((left, right) => {
+    const statusDiff = (precedence[left.status ?? "candidate"] ?? 1) - (precedence[right.status ?? "candidate"] ?? 1);
+    if (statusDiff !== 0) return statusDiff;
+    const dateDiff = String(right.updated_at ?? "").localeCompare(String(left.updated_at ?? ""));
+    if (dateDiff !== 0) return dateDiff;
+    return String(left.id).localeCompare(String(right.id));
+  })[0];
 }

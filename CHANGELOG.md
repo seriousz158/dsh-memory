@@ -2,6 +2,138 @@
 
 All notable changes to this project are documented here.
 
+## [0.5.0] - 2026-08-20
+
+### Added
+
+- `dsh-memory-backup export <bundle>`: self-contained Git bundle of the full
+  memory history plus a manifest sidecar (head, commit count, payload file
+  list, size). The live store is never modified.
+- `dsh-memory-backup import <bundle> [--target <root>]`: restores a bundle
+  into a new directory as a complete Git worktree (recovery/apply/journal/
+  rollback history preserved). Refuses an existing target; `--dry-run`
+  verifies without writing.
+- `docs/compatibility.md`: DSH runtime matrix (rc.6 declared peer, rc.7
+  verified baseline), operating-system scope (macOS supported, Linux
+  expected, Windows unsupported), and integration tool defaults.
+- Release checklist now verifies the backup round-trip before release.
+
+### Compatibility
+
+- DSH `0.1.0-rc.6` remains within the declared peer range.
+- DSH `0.1.0-rc.7` is the reproducible clean-room and locally integrated
+  baseline.
+
+### Safety
+
+- Backup export never touches the live store; import never overwrites an
+  existing repository and verifies the bundle before writing.
+- The backup manifest contains metadata only (head, counts, file list) —
+  no transcripts, prompts, or credentials.
+
+## [0.4.0] - 2026-08-20
+
+### Added
+
+- Namespaced record ids: a single `/` separator (`project/codegen`,
+  `user/preferences`); each segment is `[a-z0-9][a-z0-9-]*`. Enforced by both
+  the JS metadata parser and the Python staging validator.
+- Optional provenance front matter fields: `source_hash`, `created_by`,
+  `review_after`, `expires_at`. Absent fields parse as `null` and render
+  canonically; invalid values fail closed.
+- Lazy expiry projection: a record with `expires_at` in the past is excluded
+  from `search()` and from deterministic conflict resolution without
+  rewriting its front matter.
+- Deterministic conflict resolution: records sharing a topic key
+  (`type:namespace`) pick a winner by status precedence (active > candidate >
+  conflicted > superseded > archived), then newest `updated_at`, then smallest
+  id. Expired records never win.
+- `memory.search({ query, limit })` local full-text search over payload
+  records with front matter + body scoring and snippets.
+- `memory/search` remote descriptor for the settings UI.
+
+### Compatibility
+
+- DSH `0.1.0-rc.6` remains within the declared peer range.
+- DSH `0.1.0-rc.7` is the reproducible clean-room and locally integrated
+  baseline.
+
+### Safety
+
+- Malformed provenance values and out-of-pattern namespaced ids fail closed in
+  both parsers.
+- Lazy expiry never mutates record files; a later consolidation decides how to
+  archive or remove expired content.
+
+## [0.3.1] - 2026-08-20
+
+### Added
+
+- `dsh-memory-sync --preview <id>` captures a candidate diff as a pending
+  preview under `<root>/.sync/previews/<id>` (7-day expiry) without applying.
+- `dsh-memory-sync --apply-preview <id>` applies a pending preview as a normal
+  sync transaction and journals it under `operation: preview`; the preview is
+  consumed on success.
+- `dsh-memory-sync --discard-preview <id>` removes a pending preview.
+- `dsh-memory-sync --dry-run --json` emits a single machine-parseable JSON
+  report with all progress lines suppressed from stdout.
+- `memory.previews()`, `memory.applyPreview()`, and `memory.discardPreview()`
+  host APIs, plus settings-UI preview list with apply/discard actions.
+- `prepare-preview` now seeds the preview staging from the live payload tree
+  (baseline + directory skeleton + manifest), so an applied preview is a
+  complete transaction.
+- Helper error envelopes are recovered from non-zero helper exits (stdout JSON)
+  instead of collapsing to a generic failure code.
+
+### Compatibility
+
+- DSH `0.1.0-rc.6` remains within the declared peer range.
+- DSH `0.1.0-rc.7` is the reproducible clean-room and locally integrated
+  baseline.
+
+### Safety
+
+- A preview apply acquires the operation lock, so it cannot race a normal sync.
+- Applying a preview never touches the watermark (`.last-sync`); a later normal
+  sync still sees the sessions that produced the preview.
+- Expired previews are never listed and cannot be applied.
+
+## [0.3.0] - 2026-08-20
+
+### Added
+
+- Host-side operation lock (`<root>/.sync/operation.lock`) that serializes sync
+  and rollback operations; stale locks from dead processes are recovered by
+  pid/mtime checks.
+- Active-run tracking (`<root>/.sync/active-run.json`) with phase progression
+  (staging/validating/applying/finalizing/complete); an interrupted run left by
+  a dead process is recovered into the journal on the next sync.
+- `memory.health()` reporting lock, active-run, interrupted-run, journal
+  readability, and a `needsManualRecovery` flag; `memory.runs()` now accepts
+  `operation` and `status` filters; `memory.status()` reports the newest
+  pending preview.
+- Hard staging limits enforced before apply: 1 MiB per file, 50 added files,
+  5 MiB total change bytes, with stable rejection codes.
+- Failed applies are journaled (`status: failed`, `error_code`) so attempted
+  runs are auditable.
+- `.sync` directory created by the initializer with a `.gitignore` covering
+  `operation.lock`, `active-run.json`, and `previews/`.
+
+### Compatibility
+
+- DSH `0.1.0-rc.6` remains within the declared peer range.
+- DSH `0.1.0-rc.7` is the reproducible clean-room and locally integrated
+  baseline.
+- DSH `rc.8` and later releases are not verified by this release.
+
+### Safety
+
+- The operation lock and active-run record are host-side coordination state,
+  never committed into the memory payload; `.sync/.gitignore` keeps them out of
+  journal commits.
+- Dry-run remains read-only: it never touches the lock, the journal, Git, or
+  the watermark.
+
 ## [0.2.0] - 2026-08-20
 
 ### Added
