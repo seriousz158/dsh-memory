@@ -226,9 +226,9 @@ window.__ModuleLoader__.load({
                 jsx.jsx("button", { type: "button", className: "dshmu_button", disabled: !available || busy || (stage === 2 && phrase !== "删除记忆"), onClick: clear, children: busy ? "正在清空…" : stage === 0 ? "删除记忆" : stage === 1 ? "继续" : "最终确认删除" }),
                 state && jsx.jsx("span", { className: state.error ? "dshmu_status dshmu_error" : "dshmu_status", children: state.error ? `清空失败：${state.error}` : state.success }),
               ] }),
-              jsx.jsxs("div", { className: "dshmu_clear", children: [
+              legacyList !== null && legacyList.length === 0 ? null : jsx.jsxs("div", { className: "dshmu_clear", children: [
                 jsx.jsx("span", { className: "dshmu_title", children: "Legacy 记录" }),
-                jsx.jsx("span", { className: legacyError ? "dshmu_status dshmu_error" : "dshmu_status", children: legacyList === null ? legacyError ? `legacy 记录不可用：${legacyError}` : "正在读取 legacy 记录…" : legacyList.length === 0 ? "没有待迁移的 legacy 记录" : `待迁移 ${legacyList.length} 个 legacy 记录` }),
+                jsx.jsx("span", { className: legacyError ? "dshmu_status dshmu_error" : "dshmu_status", children: legacyList === null ? legacyError ? `legacy 记录不可用：${legacyError}` : "正在读取 legacy 记录…" : `待迁移 ${legacyList.length} 个 legacy 记录` }),
                 legacyList && legacyList.map((record) => jsx.jsx("span", { className: "dshmu_status", children: `${record.path} → ${record.id}` }, record.path)),
                 jsx.jsx("button", { type: "button", className: "dshmu_button", disabled: !available || migrationBusy || !legacyList || legacyList.length === 0, onClick: migrateLegacy, children: migrationBusy ? "正在迁移…" : "迁移 legacy 记录" }),
                 migrationAction && jsx.jsx("span", { className: migrationAction.error ? "dshmu_status dshmu_error" : "dshmu_status", children: migrationAction.error ? `迁移失败：${migrationAction.error}` : migrationAction.success }),
