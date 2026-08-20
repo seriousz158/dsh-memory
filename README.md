@@ -142,9 +142,28 @@ CLI and settings UI use the same safe transaction path:
 - The settings UI shows pending legacy paths and generated ids and offers an
   explicit migration action. It does not expose the filesystem root or run Git.
 
+## v0.7: browser end-to-end tests
+
+v0.7 adds a real browser test suite for the settings UI so the panel's
+behavior is verified, not just snapshot-checked:
+
+- The E2E runner boots a throwaway DSH web profile on an ephemeral port: a
+  fresh DSH_HOME reuses the pinned runtime and shared plugin store, symlinks
+  the local `dsh-memory`/`dsh-memory-ui` workspaces, seeds onboarding settings
+  and an empty fixture memory repository, and registers only the two memory
+  plugins via `--patch`. The live `~/.dsh`, memory store, and provider
+  credentials are never touched.
+- Headless Chromium drives the real settings popover and asserts the
+  desktop/light layout, the empty-state hiding of the Legacy and preview
+  sections on a fresh store, the enable switch, the theme token contract
+  (`var(--dsw-*)` in the injected stylesheet), and the 480px narrow layout
+  with no horizontal overflow.
+- The suite runs as part of `npm test` and skips cleanly when the Python
+  Playwright browser-acceptance tooling is unavailable (e.g. CI images).
+
 ## Compatibility
 
-`v0.6.0` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
+`v0.7.0` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
 tested and locally integrated with a consistently pinned `0.1.0-rc.7` graph:
 
 | Component | Supported version |
