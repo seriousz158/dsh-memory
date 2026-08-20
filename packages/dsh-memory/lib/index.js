@@ -1,7 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir, tmpdir } from "node:os";
-import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rmdir, unlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { join, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
@@ -19,6 +19,8 @@ import {
   writeActiveRun,
 } from "./operation-lock.js";
 import { parseFrontMatter, isExpired, topicKey } from "./memory-metadata.js";
+import { legacyRecordSummary, migratedContent, scanLegacyRecords } from "./legacy-migration.js";
+import { SyncTransaction } from "./sync-transaction.js";
 
 const execFile = promisify(execFileCallback);
 const NS = settingsNamespace("memory");
@@ -91,6 +93,11 @@ async function listPayloadFiles(directory, prefix) {
 function layoutError() { return Object.assign(new Error("unsafe memory layout"), { memoryCode: "unsafe-layout" }); }
 function clearError() { return Object.assign(new Error("memory layout changed while clearing"), { memoryCode: "clear-failed" }); }
 function memoryError(code) { return Object.assign(new Error("memory operation failed: " + code), { memoryCode: code }); }
+function migrationErrorCode(error, fallback = "migration-failed") {
+  if (typeof error?.memoryCode === "string") return error.memoryCode;
+  if (typeof error?.code === "string" && error.code !== "ENOENT") return `migration-${error.code}`;
+  return fallback;
+}
 function operationRunId(operation) {
   const timestamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
   return `${timestamp}-${operation}-${process.pid}`;
@@ -341,6 +348,173 @@ export class MemoryRepository {
       return { legacyFileCount, pendingMigration: legacyFileCount > 0 };
     } catch {
       return { legacyFileCount: 0, pendingMigration: false };
+    }
+  }
+
+  /** Return metadata-only descriptions of legacy Markdown records. */
+  async legacyRecords() {
+    try {
+      const root = await this.inspect();
+      const records = await scanLegacyRecords(root);
+      return success({
+        records: records.map(legacyRecordSummary),
+        count: records.length,
+        pendingMigration: records.length > 0,
+      });
+    } catch (error) {
+      return failure(migrationErrorCode(error, "repo-unavailable"));
+    }
+  }
+
+  /**
+   * Add deterministic minimum front matter to legacy records.
+   *
+   * dryRun=true is read-only. The apply path uses the same staging/apply/
+   * journal transaction as model-generated syncs; the model and browser never
+   * receive the live repository path or Git operation.
+   */
+  async migrateLegacy(request = {}) {
+    if (typeof request?.dryRun !== "boolean") return failure("migration-invalid-request");
+    let root;
+    try { root = await this.inspect(); } catch (error) { return failure(migrationErrorCode(error, "repo-unavailable")); }
+
+    let records;
+    try { records = await scanLegacyRecords(root); } catch (error) { return failure(migrationErrorCode(error)); }
+    const summaries = () => records.map(legacyRecordSummary);
+    const emptyResult = (dryRun, status = "no_change") => success({
+      dryRun,
+      status,
+      legacyCount: records.length,
+      migratedCount: 0,
+      changedPaths: dryRun ? records.map((record) => record.path) : [],
+      records: summaries(),
+      recoveryCommit: null,
+      applyCommit: null,
+      journalCommit: null,
+    });
+    if (request.dryRun) return emptyResult(true, records.length === 0 ? "no_change" : "pending");
+    if (records.length === 0) return emptyResult(false);
+
+    const runId = operationRunId("migrate");
+    const startedAt = new Date().toISOString();
+    const transaction = new SyncTransaction(root);
+    let lockAcquired = false;
+    let active;
+    let stagingRoot;
+    let journaled = false;
+    let applied = null;
+    let changedPaths = [];
+    try {
+      await acquireOperationLock(root, { operation: "migrate", runId });
+      lockAcquired = true;
+      const recovered = await transaction.recoverActive();
+      if (recovered?.recovered === true) return failure("interrupted-run");
+      active = {
+        schema_version: 1,
+        run_id: runId,
+        operation: "migrate",
+        status: "running",
+        phase: "staging",
+        pid: process.pid,
+        started_at: startedAt,
+      };
+      await writeActiveRun(root, active);
+
+      // Canonicalize the root after locking before taking the staging
+      // baseline. A second scan follows the snapshot below.
+      root = await this.inspect();
+      stagingRoot = await mkdtemp(join(tmpdir(), "dpsk-memory-migrate-"));
+      const staging = join(stagingRoot, "staging");
+      const manifest = join(stagingRoot, "manifest.json");
+      await transaction.stageCopy(staging, manifest);
+
+      // Stage-copy captures the apply baseline. Scan again after that
+      // snapshot so a concurrent user edit between the first scan and the
+      // copy can never be replaced by stale legacy content. The apply helper
+      // performs one final baseline hash check before touching the live tree.
+      records = await scanLegacyRecords(root);
+      if (records.length === 0) return emptyResult(false);
+
+      active.phase = "validating";
+      await writeActiveRun(root, active);
+      for (const record of records) {
+        await writeFile(join(staging, record.path), migratedContent(record), { mode: 0o600 });
+      }
+      await transaction.verifyStaging(staging, manifest);
+      const diff = await transaction.diff(staging, manifest);
+      changedPaths = [...diff.added, ...diff.modified, ...diff.deleted].sort();
+      if (changedPaths.length === 0) return emptyResult(false);
+
+      active.phase = "applying";
+      await writeActiveRun(root, active);
+      applied = await transaction.apply(staging, manifest, runId, startedAt);
+      active.phase = "finalizing";
+      await writeActiveRun(root, active);
+      const finishedAt = new Date().toISOString();
+      const journal = await transaction.finalize({
+        runId,
+        operation: "migrate",
+        status: applied.status ?? "applied",
+        phase: "complete",
+        startedAt,
+        finishedAt,
+        candidateSessions: 0,
+        processedSessions: 0,
+        skippedSessions: 0,
+        changedPaths: applied.changed_paths ?? changedPaths,
+        recoveryCommit: applied.recovery_commit ?? null,
+        applyCommit: applied.apply_commit ?? null,
+        errorCode: null,
+        durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+        rejectedFileCount: 0,
+      });
+      journaled = true;
+      const migratedPaths = applied.changed_paths ?? changedPaths;
+      return success({
+        dryRun: false,
+        status: applied.status ?? "applied",
+        legacyCount: records.length,
+        migratedCount: migratedPaths.length,
+        changedPaths: migratedPaths,
+        records: summaries(),
+        recoveryCommit: applied.recovery_commit ?? null,
+        applyCommit: applied.apply_commit ?? null,
+        journalCommit: journal?.journal_commit ?? null,
+      });
+    } catch (error) {
+      const code = migrationErrorCode(error);
+      // A normal helper failure is still journaled. If apply had already
+      // returned, its commit is durable and the failure is specifically the
+      // journal/finalization boundary, so do not write a contradictory record.
+      if (lockAcquired && !journaled && applied === null) {
+        try {
+          await transaction.finalize({
+            runId,
+            operation: "migrate",
+            status: "failed",
+            phase: active?.phase ?? "staging",
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            candidateSessions: 0,
+            processedSessions: 0,
+            skippedSessions: 0,
+            changedPaths,
+            recoveryCommit: null,
+            applyCommit: null,
+            errorCode: code,
+            durationMs: Math.max(0, Date.now() - Date.parse(startedAt)),
+            rejectedFileCount: 0,
+          });
+          journaled = true;
+        } catch {}
+      }
+      return failure(code);
+    } finally {
+      if (stagingRoot !== undefined) await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+      if (lockAcquired) {
+        await clearActiveRun(root, runId).catch(() => {});
+        await releaseOperationLock(root, runId).catch(() => {});
+      }
     }
   }
 
@@ -771,6 +945,8 @@ export class MemoryService extends TypertRemoteService {
   async setEnabled(request) { return await this.settings.setEnabled(request); }
   async status() { return await this.repository.status(); }
   async health() { return await this.repository.health(); }
+  async legacyRecords() { return await this.repository.legacyRecords(); }
+  async migrateLegacy(request) { return await this.repository.migrateLegacy(request); }
   async clear(request) { return await this.repository.clear(request); }
   async runs(request) { return await this.repository.runs(request); }
   async rollback(request) { return await this.repository.rollback(request); }
@@ -783,6 +959,8 @@ decorate(MemoryService, "getSettings", Remote("getSettings"));
 decorate(MemoryService, "setEnabled", Remote("setEnabled"));
 decorate(MemoryService, "status", Remote("status"));
 decorate(MemoryService, "health", Remote("health"));
+decorate(MemoryService, "legacyRecords", Remote("legacyRecords"));
+decorate(MemoryService, "migrateLegacy", Remote("migrateLegacy"));
 decorate(MemoryService, "clear", Remote("clear"));
 decorate(MemoryService, "runs", Remote("runs"));
 decorate(MemoryService, "rollback", Remote("rollback"));

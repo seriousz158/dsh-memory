@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here.
 
+## [0.6.0] - 2026-08-20
+
+### Added
+
+- `memory.legacyRecords()` exposes metadata-only legacy-record discovery to
+  the host and settings UI.
+- `memory.migrateLegacy({ dryRun })` moves the existing CLI migration logic
+  into the library and applies front matter through the normal staged,
+  host-owned recovery/apply transaction.
+- `dsh-memory-migrate --dry-run|--apply` now delegates to the library API.
+- Settings UI now shows pending legacy paths and deterministic generated ids,
+  and offers an explicit migration action.
+
+### Safety
+
+- Dry-run does not write the live repository, journal, watermark, or Git.
+- Migration preserves legacy record bodies and stores metadata only in the
+  journal; no transcript, prompt, credential, or memory body is exposed.
+- Applying migration is idempotent and uses the existing operation lock.
+
 ## [0.5.0] - 2026-08-20
 
 ### Added

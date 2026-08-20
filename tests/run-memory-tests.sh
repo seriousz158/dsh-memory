@@ -9,6 +9,7 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
 cd "$repo_root"
 
 node tests/test_dsh_memory_repository.mjs
+node tests/test_dsh_memory_migration_api.mjs
 node tests/test_dsh_memory_sync_transaction.mjs
 node tests/test_dsh_memory_operation_lock.mjs
 node tests/test_dsh_memory_metadata.mjs

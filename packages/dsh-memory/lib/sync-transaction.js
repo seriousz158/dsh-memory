@@ -99,6 +99,10 @@ export class SyncTransaction {
     return await invokePython("apply", { root: this.root, staging, manifest, "run-id": runId, "started-at": startedAt });
   }
 
+  async recoverActive() {
+    return await invokePython("recover-active", { root: this.root });
+  }
+
   async journal(record) {
     const args = {
       root: this.root,
@@ -113,6 +117,10 @@ export class SyncTransaction {
       "recovery-commit": record.recoveryCommit,
       "apply-commit": record.applyCommit,
       "error-code": record.errorCode,
+      phase: record.phase,
+      "staging-digest": record.stagingDigest,
+      "duration-ms": record.durationMs,
+      "rejected-file-count": record.rejectedFileCount ?? 0,
     };
     return await invokePython("journal", args);
   }
@@ -131,6 +139,10 @@ export class SyncTransaction {
       "recovery-commit": record.recoveryCommit,
       "apply-commit": record.applyCommit,
       "error-code": record.errorCode,
+      phase: record.phase,
+      "staging-digest": record.stagingDigest,
+      "duration-ms": record.durationMs,
+      "rejected-file-count": record.rejectedFileCount ?? 0,
       "last-sync": lastSync,
     };
     return await invokePython("finalize", args);
