@@ -33,6 +33,7 @@ die() {
 [[ "$MEMORY_ROOT" = /* ]] || die "DSH_MEMORY_ROOT must be an absolute path"
 [[ -d "$TEMPLATE_ROOT" && ! -L "$TEMPLATE_ROOT" ]] || die "memory templates are unavailable"
 [[ -f "$TEMPLATE_ROOT/README.md" && ! -L "$TEMPLATE_ROOT/README.md" ]] || die "memory README template is unavailable"
+[[ -f "$TEMPLATE_ROOT/.sync/.gitignore" && ! -L "$TEMPLATE_ROOT/.sync/.gitignore" ]] || die "sync ignore template is unavailable"
 [[ -f "$TEMPLATE_ROOT/scripts/filter_session.py" && ! -L "$TEMPLATE_ROOT/scripts/filter_session.py" ]] || die "session filter template is unavailable"
 
 git_bin="$(command -v git)" || die "git is required"
@@ -45,10 +46,10 @@ validate_initialized_repository() {
 
   [[ -d "$MEMORY_ROOT/.git" && ! -L "$MEMORY_ROOT/.git" ]] || return 1
   "$git_bin" -C "$MEMORY_ROOT" rev-parse --verify HEAD >/dev/null 2>&1 || return 1
-  for required_path in README.md summary.md .last-sync scripts/filter_session.py; do
+  for required_path in README.md summary.md .last-sync .sync/.gitignore scripts/filter_session.py; do
     [[ -f "$MEMORY_ROOT/$required_path" && ! -L "$MEMORY_ROOT/$required_path" ]] || return 1
   done
-  for required_directory in handbook rollouts archive scripts; do
+  for required_directory in handbook rollouts archive scripts .sync; do
     [[ -d "$MEMORY_ROOT/$required_directory" && ! -L "$MEMORY_ROOT/$required_directory" ]] || return 1
   done
   [[ -x "$MEMORY_ROOT/scripts/filter_session.py" ]] || return 1
@@ -61,11 +62,13 @@ harden_initialized_repository() {
     "$MEMORY_ROOT/handbook" \
     "$MEMORY_ROOT/rollouts" \
     "$MEMORY_ROOT/archive" \
+    "$MEMORY_ROOT/.sync" \
     "$MEMORY_ROOT/scripts"
   chmod 600 \
     "$MEMORY_ROOT/README.md" \
     "$MEMORY_ROOT/summary.md" \
-    "$MEMORY_ROOT/.last-sync"
+    "$MEMORY_ROOT/.last-sync" \
+    "$MEMORY_ROOT/.sync/.gitignore"
   chmod 700 "$MEMORY_ROOT/scripts/filter_session.py"
 }
 
@@ -76,6 +79,16 @@ if [[ -e "$MEMORY_ROOT" || -L "$MEMORY_ROOT" ]]; then
     top_path="$("$git_bin" -C "$MEMORY_ROOT" rev-parse --show-toplevel)"
     top_real="$(cd -- "$top_path" && pwd -P)"
     [[ "$root_real" == "$top_real" ]] || die "memory root must be the Git worktree root"
+    if [[ ! -e "$MEMORY_ROOT/.sync" ]]; then
+      mkdir -p "$MEMORY_ROOT/.sync"
+      "$install_bin" -m 600 "$TEMPLATE_ROOT/.sync/.gitignore" "$MEMORY_ROOT/.sync/.gitignore"
+    elif [[ ! -d "$MEMORY_ROOT/.sync" || -L "$MEMORY_ROOT/.sync" ]]; then
+      die "memory .sync path is unsafe"
+    elif [[ ! -e "$MEMORY_ROOT/.sync/.gitignore" ]]; then
+      "$install_bin" -m 600 "$TEMPLATE_ROOT/.sync/.gitignore" "$MEMORY_ROOT/.sync/.gitignore"
+    elif [[ -L "$MEMORY_ROOT/.sync/.gitignore" ]]; then
+      die "memory .sync/.gitignore is unsafe"
+    fi
     validate_initialized_repository || die "memory root is an incomplete DSH memory repository"
     harden_initialized_repository || die "could not restore private memory repository permissions"
     print -- "$root_real"
@@ -87,9 +100,10 @@ else
 fi
 
 [[ ! -L "$MEMORY_ROOT" ]] || die "refusing a symlink memory root"
-mkdir -p "$MEMORY_ROOT/handbook" "$MEMORY_ROOT/rollouts" "$MEMORY_ROOT/archive" "$MEMORY_ROOT/scripts"
-chmod 700 "$MEMORY_ROOT" "$MEMORY_ROOT/handbook" "$MEMORY_ROOT/rollouts" "$MEMORY_ROOT/archive" "$MEMORY_ROOT/scripts"
+mkdir -p "$MEMORY_ROOT/handbook" "$MEMORY_ROOT/rollouts" "$MEMORY_ROOT/archive" "$MEMORY_ROOT/scripts" "$MEMORY_ROOT/.sync"
+chmod 700 "$MEMORY_ROOT" "$MEMORY_ROOT/handbook" "$MEMORY_ROOT/rollouts" "$MEMORY_ROOT/archive" "$MEMORY_ROOT/scripts" "$MEMORY_ROOT/.sync"
 "$install_bin" -m 600 "$TEMPLATE_ROOT/README.md" "$MEMORY_ROOT/README.md"
+"$install_bin" -m 600 "$TEMPLATE_ROOT/.sync/.gitignore" "$MEMORY_ROOT/.sync/.gitignore"
 "$install_bin" -m 700 "$TEMPLATE_ROOT/scripts/filter_session.py" "$MEMORY_ROOT/scripts/filter_session.py"
 : > "$MEMORY_ROOT/summary.md"
 : > "$MEMORY_ROOT/.last-sync"
@@ -98,7 +112,7 @@ chmod 600 "$MEMORY_ROOT/README.md" "$MEMORY_ROOT/summary.md" "$MEMORY_ROOT/.last
 "$git_bin" -C "$MEMORY_ROOT" init --quiet
 "$git_bin" -C "$MEMORY_ROOT" config user.name "DPSK Memory"
 "$git_bin" -C "$MEMORY_ROOT" config user.email "dpsk-memory@localhost"
-"$git_bin" -C "$MEMORY_ROOT" add README.md summary.md .last-sync scripts/filter_session.py
+"$git_bin" -C "$MEMORY_ROOT" add README.md summary.md .last-sync .sync/.gitignore scripts/filter_session.py
 "$git_bin" -C "$MEMORY_ROOT" commit --quiet -m "Initialize DPSK memory repository"
 harden_initialized_repository || die "could not set private memory repository permissions"
 

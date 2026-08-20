@@ -50,9 +50,14 @@ test "$rc" = "0"
 grep -q -- 'dry-run' "$OUTPUT"
 grep -q -- 'handbook/synthetic.md' "$OUTPUT"
 
-# dry-run must not modify the live root, journal, or watermark.
+# dry-run must not modify the live root, journal, or watermark. The .sync
+# directory itself is created by the initializer (with its .gitignore), but a
+# dry-run must not create a lock, an active-run record, or any run journal.
 test ! -e "$TEST_MEMORY_ROOT/handbook/synthetic.md"
-test ! -e "$TEST_MEMORY_ROOT/.sync"
+test ! -e "$TEST_MEMORY_ROOT/.sync/operation.lock"
+test ! -e "$TEST_MEMORY_ROOT/.sync/active-run.json"
+test ! -d "$TEST_MEMORY_ROOT/.sync/runs"
+test ! -e "$TEST_MEMORY_ROOT/.sync/last-run.json"
 test ! -e "$TEST_MEMORY_ROOT/.last-sync"
 # The marker was removed by the test itself; nothing else in the live root may change.
 test "$(git -C "$TEST_MEMORY_ROOT" status --porcelain | grep -v '^ D .last-sync$' | wc -l | tr -d ' ')" = "0"

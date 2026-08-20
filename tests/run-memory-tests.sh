@@ -21,4 +21,5 @@ zsh tests/test_dsh_memory_install.sh
 zsh tests/test_dsh_memory_sync_disabled.sh
 zsh tests/test_dsh_memory_sync_env.sh
 zsh tests/test_dsh_memory_sync_dry_run.sh
+zsh tests/test_dsh_memory_sync_lock.sh
 zsh tests/test_dsh_memory_migrate.sh

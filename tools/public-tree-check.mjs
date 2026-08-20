@@ -77,6 +77,7 @@ const allowed = new Set([
   "tests/test_dsh_memory_sync_disabled.sh",
   "tests/test_dsh_memory_sync_dry_run.sh",
   "tests/test_dsh_memory_sync_env.sh",
+  "tests/test_dsh_memory_sync_lock.sh",
   "tests/test_dsh_memory_ui_settings_row.sh",
   "tests/test_public_tree.sh",
   "tests/test_release_guards.sh",

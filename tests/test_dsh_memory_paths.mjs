@@ -13,6 +13,10 @@ const hostModule = join(fixture, "dsh-memory", "lib", "index.js");
 
 await mkdir(dirname(hostModule), { recursive: true });
 await cp(join(project, "packages/dsh-memory/lib/index.js"), hostModule);
+await cp(
+  join(project, "packages/dsh-memory/lib/operation-lock.js"),
+  join(fixture, "dsh-memory", "lib", "operation-lock.js"),
+);
 await writeFile(join(fixture, "dsh-memory", "package.json"), '{"type":"module"}\n');
 
 const stubs = {

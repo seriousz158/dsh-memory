@@ -57,6 +57,20 @@ const repository = async (root) => new MemoryRepository({ root, __testOnly: true
   assert.equal(status.ok, true);
   assert.equal(status.value.empty, false);
   assert.equal(status.value.dataFileCount, 4);
+  assert.equal(status.value.pendingPreview, null);
+}
+{
+  const root = await fixture();
+  const health = await (await repository(root)).health();
+  assert.equal(health.ok, true);
+  assert.equal(health.value.rootSafe, true);
+  assert.equal(health.value.gitAvailable, true);
+  assert.equal(health.value.operationLock, null);
+  assert.equal(health.value.activeRun, null);
+  assert.equal(health.value.interruptedRun, null);
+  assert.equal(health.value.pendingPreviewCount, 0);
+  assert.equal(health.value.journalReadable, true);
+  assert.equal(health.value.needsManualRecovery, false);
 }
 {
   const root = await fixture();

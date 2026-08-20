@@ -1,4 +1,4 @@
-import { open, mkdir, readFile, unlink, writeFile, lstat } from "node:fs/promises";
+import { open, mkdir, readFile, unlink, writeFile, lstat, rename, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 const SYNC_DIR = ".sync";
@@ -27,14 +27,20 @@ async function readJson(path) {
   catch { return null; }
 }
 
-function processAlive(pid) {
+export function processAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; }
   catch (error) { return error?.code === "EPERM"; }
 }
 
 async function writeJson(path, value) {
-  await writeFile(path, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+  const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(temporary, JSON.stringify(value, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+  try { await rename(temporary, path); }
+  catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
 }
 
 export async function acquireOperationLock(root, { operation, runId, staleAfterMs = DEFAULT_STALE_MS }) {
@@ -85,12 +91,10 @@ export async function writeActiveRun(root, record) {
 }
 
 export async function readActiveRun(root) {
-  await ensureSyncDirectory(root);
   return await readJson(join(root, SYNC_DIR, ACTIVE_FILE));
 }
 
 export async function readOperationLock(root) {
-  await ensureSyncDirectory(root);
   return await readJson(join(root, SYNC_DIR, LOCK_FILE));
 }
 
@@ -106,7 +110,7 @@ export async function clearActiveRun(root, runId = undefined) {
 }
 
 export async function listPendingPreviews(root) {
-  const directory = join(await ensureSyncDirectory(root), "previews");
+  const directory = join(root, SYNC_DIR, "previews");
   try {
     const stat = await lstat(directory);
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw operationError("unsafe-layout");
@@ -114,7 +118,6 @@ export async function listPendingPreviews(root) {
     if (error?.code === "ENOENT") return [];
     throw error;
   }
-  const { readdir } = await import("node:fs/promises");
   const entries = await readdir(directory, { withFileTypes: true });
   const previews = [];
   for (const entry of entries) {

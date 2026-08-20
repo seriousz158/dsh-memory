@@ -139,9 +139,85 @@ payload records (handbook/, rollouts/, archive/) without front matter;
 is true when at least one legacy record exists. `lastRun` is null before the
 first journaled run and otherwise reflects `.sync/last-run.json`.
 
-### `memory.runs({ limit })`
+### `memory.status()` (v0.3)
 
-Lists recent journaled runs (newest first, default limit 20):
+The response adds a pending-preview field:
+
+```json
+{
+  "ok": true,
+  "value": {
+    "empty": false,
+    "dataFileCount": 6,
+    "targetDirty": false,
+    "recoverable": true,
+    "schemaVersion": 1,
+    "legacyFileCount": 2,
+    "pendingMigration": true,
+    "lastRun": { "runId": "...", "status": "applied" },
+    "pendingPreview": null
+  }
+}
+```
+
+`pendingPreview` is the newest non-expired preview under `.sync/previews/`, or
+`null` when none exists. Previews expire after a host-defined TTL and are
+cleaned lazily; an expired preview is never reported as pending.
+
+### `memory.health()`
+
+Read-only repository health summary used by the settings UI:
+
+```json
+{
+  "ok": true,
+  "value": {
+    "memoryRoot": "$DSH_HOME/storages/memory",
+    "rootSafe": true,
+    "gitAvailable": true,
+    "dataFileCount": 6,
+    "payloadDirty": false,
+    "operationLock": {
+      "operation": "sync",
+      "pid": 12345,
+      "runId": "20260820T100000Z-a1b2c3d4",
+      "startedAt": "2026-08-20T10:00:00Z",
+      "active": false
+    },
+    "activeRun": {
+      "run_id": "20260820T100000Z-a1b2c3d4",
+      "operation": "sync",
+      "status": "running",
+      "phase": "applying",
+      "pid": 12345,
+      "started_at": "2026-08-20T10:00:00Z",
+      "state": "running"
+    },
+    "interruptedRun": null,
+    "pendingPreview": null,
+    "pendingPreviewCount": 0,
+    "journalReadable": true,
+    "needsManualRecovery": false
+  }
+}
+```
+
+`operationLock` is the current `.sync/operation.lock` state (null when no lock
+is held). `activeRun.state` is `running` when the recorded pid is alive,
+`interrupted` when the pid is gone, and `null` when no active run exists.
+`interruptedRun` is the interrupted run record that should be recovered or
+audited. `needsManualRecovery` is true when the payload is dirty, an active run
+is interrupted, an interrupted run exists in the journal, or the journal is not
+readable.
+
+Failures use `repo-unavailable` or `unsafe-layout`.
+
+### `memory.runs({ limit, operation, status })`
+
+Lists recent journaled runs (newest first, default limit 20). `operation` and
+`status` are optional exact-match filters. Run records include the v0.3 fields
+`phase` (staging/validating/applying/finalizing/complete), `duration_ms`,
+`rejected_file_count`, `changed_path_count`, and `staging_digest`:
 
 ```json
 {
@@ -153,9 +229,13 @@ Lists recent journaled runs (newest first, default limit 20):
         "run_id": "20260819T120000Z-a1b2c3d4",
         "operation": "sync",
         "status": "applied",
+        "phase": "complete",
         "changed_paths": ["handbook/preferences.md"],
         "recovery_commit": "...",
-        "apply_commit": "..."
+        "apply_commit": "...",
+        "duration_ms": 1234,
+        "rejected_file_count": 0,
+        "changed_path_count": 1
       }
     ]
   }

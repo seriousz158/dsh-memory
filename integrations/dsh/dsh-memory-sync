@@ -1,11 +1,13 @@
 #!/bin/zsh
 # dsh-memory-sync: transactional, headless memory consolidation.
 #
-# v0.2: headless DSH only ever sees an isolated staging worktree. The host
+# v0.3: headless DSH only ever sees an isolated staging worktree. The host
 # verifies the staged diff and applies it to the live memory root with its own
 # Git commits (recovery + apply), records a run journal, and only then advances
-# the .last-sync watermark. A --dry-run flag reports the candidate diff without
-# touching the live root, the journal, or Git.
+# the .last-sync watermark. A host-side operation lock serializes sync runs and
+# an active-run record lets an interrupted run be recovered on the next sync.
+# A --dry-run flag reports the candidate diff without touching the live root,
+# the journal, the lock, or Git.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
@@ -93,7 +95,11 @@ if [[ -f "$MARKER" ]]; then
   NEW=$(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$MARKER" ! -newermt '-1 hour' 2>/dev/null | wc -l | tr -d ' ')
   CANDIDATE_SESSIONS="$NEW"
   if [[ "$NEW" == "0" ]]; then
-    echo "dsh-memory-sync: no new idle session logs since $(stat -f '%Sm' "$MARKER"), nothing to do."
+    if [[ "$DRY_RUN" == "1" ]]; then
+      echo "dsh-memory-sync: dry-run: no new idle session logs since $(stat -f '%Sm' "$MARKER"), nothing to do."
+    else
+      echo "dsh-memory-sync: no new idle session logs since $(stat -f '%Sm' "$MARKER"), nothing to do."
+    fi
     exit 0
   fi
   echo "dsh-memory-sync: $NEW new idle session log(s), starting headless consolidation…"
@@ -117,6 +123,39 @@ START_TS=$(date +%s)
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-$(/usr/bin/uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-' | cut -c1-8)
 STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+# v0.3: serialize sync runs with a host-side operation lock and record the
+# active run so an interrupted process can be recovered on the next sync.
+# Dry-run is read-only and must not create .sync, so the lock is only taken
+# when a real apply can happen.
+LOCK_HELD=0
+cleanup_sync_operation() {
+  if [[ "$LOCK_HELD" == "1" ]]; then
+    sync_apply clear-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" >/dev/null 2>&1 || true
+    sync_apply release-lock --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_sync_operation EXIT
+
+if [[ "$DRY_RUN" == "0" ]]; then
+  lock_output="$(sync_apply acquire-lock --root "$DSH_MEMORY_ROOT" --operation-name sync --run-id "$RUN_ID")" || {
+    print -u2 -- "dsh-memory-sync: another sync operation is in progress"
+    exit 1
+  }
+  LOCK_HELD=1
+  # A previous sync may have been interrupted (dead pid + active-run record).
+  # Recover it into the journal before starting a fresh run.
+  recover_output="$(sync_apply recover-active --root "$DSH_MEMORY_ROOT")" || {
+    print -u2 -- "dsh-memory-sync: active run recovery failed: $recover_output"
+    exit 1
+  }
+  recovered="$(printf '%s' "$recover_output" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["value"]["recovered"])')"
+  if [[ "$recovered" == "True" ]]; then
+    echo "dsh-memory-sync: recovered an interrupted run; see the run journal."
+  fi
+  sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
+    --phase staging --started-at "$STARTED_AT" >/dev/null
+fi
+
 # --- Transaction setup: an isolated staging worktree + baseline manifest ---
 STAGING_PARENT="${TMPDIR:-/tmp}/dsh-memory-sync-$$"
 STAGING="$STAGING_PARENT/staging"
@@ -125,7 +164,8 @@ mkdir -p "$STAGING_PARENT"
 umask 077
 
 apply_output="$(sync_apply stage-copy --root "$DSH_MEMORY_ROOT" --staging "$STAGING" --manifest "$MANIFEST")" || {
-  print -u2 -- "dsh-memory-sync: staging copy failed: $apply_output"
+  apply_error="$(printf '%s' "$apply_output" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null || echo staging-failed)"
+  print -u2 -- "dsh-memory-sync: staging copy failed: $apply_error"
   rm -rf -- "$STAGING_PARENT"
   exit 1
 }
@@ -178,8 +218,13 @@ done
 PROCESSED_SESSIONS="$CANDIDATE_SESSIONS"
 
 # --- Host-side verification and apply ---
+if [[ "$DRY_RUN" == "0" ]]; then
+  sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
+    --phase validating --started-at "$STARTED_AT" >/dev/null
+fi
 difference="$(sync_apply diff --staging "$STAGING" --manifest "$MANIFEST")" || {
-  print -u2 -- "dsh-memory-sync: staging diff failed"
+  diff_error="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null || echo sync-failed)"
+  print -u2 -- "dsh-memory-sync: staging diff failed: $diff_error"
   rm -rf -- "$STAGING_PARENT"
   exit 1
 }
@@ -201,7 +246,18 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+if [[ "$DRY_RUN" == "0" ]]; then
+  sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
+    --phase applying --started-at "$STARTED_AT" >/dev/null
+fi
 apply_result="$(sync_apply apply --root "$DSH_MEMORY_ROOT" --staging "$STAGING" --manifest "$MANIFEST" --run-id "$RUN_ID" --started-at "$STARTED_AT")" || {
+  apply_error="$(printf '%s' "$apply_result" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null || echo apply-failed)"
+  # Record the failure in the journal so the run is auditable even when the
+  # apply itself did not commit anything.
+  sync_apply journal --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync --status failed \
+    --started-at "$STARTED_AT" --candidate-sessions "$CANDIDATE_SESSIONS" \
+    --processed-sessions "$PROCESSED_SESSIONS" --skipped-sessions "$SKIPPED_SESSIONS" \
+    --changed-paths "$changed_paths" --error-code "$apply_error" --phase applying >/dev/null 2>&1 || true
   print -u2 -- "dsh-memory-sync: apply failed: $apply_result"
   rm -rf -- "$STAGING_PARENT"
   exit 1
@@ -211,6 +267,11 @@ recovery_commit="$(printf '%s' "$apply_result" | /usr/bin/python3 -c 'import jso
 apply_commit="$(printf '%s' "$apply_result" | /usr/bin/python3 -c 'import json,sys; v=json.load(sys.stdin)["value"]; print(v.get("apply_commit") or "")')"
 
 # Journal the run and advance the watermark only after a successful apply.
+DURATION_MS=$(( ( $(date +%s) - START_TS ) * 1000 ))
+if [[ "$DRY_RUN" == "0" ]]; then
+  sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
+    --phase finalizing --started-at "$STARTED_AT" >/dev/null
+fi
 sync_apply finalize \
   --root "$DSH_MEMORY_ROOT" \
   --run-id "$RUN_ID" \
@@ -223,7 +284,15 @@ sync_apply finalize \
   --changed-paths "$changed_paths" \
   --recovery-commit "$recovery_commit" \
   --apply-commit "$apply_commit" \
+  --phase complete \
+  --duration-ms "$DURATION_MS" \
   --last-sync "$START_TS" >/dev/null
+
+if [[ "$DRY_RUN" == "0" ]]; then
+  sync_apply clear-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" >/dev/null 2>&1 || true
+  sync_apply release-lock --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" >/dev/null 2>&1 || true
+  LOCK_HELD=0
+fi
 
 echo "dsh-memory-sync: applied $changed_paths (recovery $recovery_commit, apply $apply_commit, run $RUN_ID)."
 rm -rf -- "$STAGING_PARENT"

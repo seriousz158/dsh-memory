@@ -15,6 +15,9 @@ It adds one persistent setting, a safe settings-page workflow for clearing memor
 
 ## v0.2: transactional sync, audit, structured memory, and rollback
 
+> Historical: v0.2 introduced transactional sync. v0.3 (below) adds run
+> serialization, health reporting, and interrupted-run recovery on top of it.
+
 v0.2 makes every automatic write transactional:
 
 - The synchronizer copies the payload tree into an isolated staging worktree;
@@ -44,9 +47,38 @@ The clear operation keeps its existing semantics: it preserves `.sync`,
 exists so an operator can see what happened. Rollback after a clear reports
 `rollback-conflict` because newer memory writes superseded the run.
 
+## v0.3: serialized sync runs, health, and interrupted-run recovery
+
+v0.3 hardens the sync pipeline against concurrent runs and crashes:
+
+- A host-side operation lock (`<root>/.sync/operation.lock`) serializes sync and
+  rollback operations. A second sync while one is running exits cleanly with
+  `operation-in-progress`; stale locks from dead processes are recovered by
+  mtime/pid checks.
+- An active-run record (`<root>/.sync/active-run.json`) tracks the phase of the
+  current run. If the host process dies mid-run, the next sync detects the dead
+  pid and recovers the interrupted run into the journal (`status: interrupted`)
+  before starting fresh work.
+- Run journal records now carry `phase`
+  (`staging`/`validating`/`applying`/`finalizing`/`complete`), `duration_ms`,
+  `rejected_file_count`, `changed_path_count`, and `staging_digest`.
+- `memory.health()` reports lock/active-run/interrupted-run/journal state and a
+  `needsManualRecovery` flag. `memory.runs()` accepts `operation` and `status`
+  filters, and `memory.status()` reports the newest pending preview.
+- Staged payloads are validated against hard limits before apply: 1 MiB per
+  file, 50 added files, 5 MiB total change bytes. Oversized or binary files are
+  rejected with `file-too-large`, `too-many-files`, `change-too-large`, or
+  `binary-file` codes instead of being applied.
+- Failed applies are journaled (`status: failed`, `error_code`) so every
+  attempted run is auditable, and the journal commit never records transcripts,
+  prompts, or credentials.
+
+`dsh-memory-sync --dry-run` remains read-only: it reports the candidate diff
+without touching the live root, the lock, the journal, Git, or the watermark.
+
 ## Compatibility
 
-`v0.2.0` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
+`v0.3.0` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
 tested and locally integrated with a consistently pinned `0.1.0-rc.7` graph:
 
 | Component | Supported version |
@@ -72,14 +104,14 @@ Clone the repository and install its reproducible development/runtime dependenci
 ```zsh
 git clone https://github.com/seriousz158/dsh-memory.git
 cd dsh-memory
-# Use the pinned runtime that this v0.2.0 integration was tested with.
+# Use the pinned runtime that this v0.3.0 integration was tested with.
 npm install --global @deepseek-ai/dsh@0.1.0-rc.7
 dsh --version
 npm ci --ignore-scripts
 ```
 
 This is a source-and-GitHub-Release project. Both workspace packages are
-intentionally marked private, so `v0.2.0` cannot be published to npm by
+intentionally marked private, so `v0.3.0` cannot be published to npm by
 accident.
 
 Install the two local packages into your DSH profile. The installer defaults to
