@@ -10,6 +10,7 @@ cd "$repo_root"
 
 node tests/test_dsh_memory_repository.mjs
 node tests/test_dsh_memory_sync_transaction.mjs
+node tests/test_dsh_memory_operation_lock.mjs
 node tests/test_dsh_memory_metadata.mjs
 node tests/test_dsh_memory_paths.mjs
 node tests/test_dsh_memory_redaction.mjs
