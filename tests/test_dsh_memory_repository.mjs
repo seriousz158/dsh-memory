@@ -60,6 +60,37 @@ const repository = async (root) => new MemoryRepository({ root, __testOnly: true
   assert.equal(status.value.pendingPreview, null);
 }
 {
+  // v0.4: local full-text search over payload records.
+  const root = await fixture();
+  await writeFile(join(root, "handbook", "project.md"), `---
+schema_version: 1
+id: project/codegen
+type: decision
+created_by: sync-agent
+tags:
+  - codegen
+---
+We chose TypeScript for the codegen pipeline.\n`);
+  await git(root, ["add", "handbook/project.md"]);
+  await git(root, ["commit", "-m", "add project record"]);
+  const service = await repository(root);
+  const hit = await service.search({ query: "codegen" });
+  assert.equal(hit.ok, true);
+  assert.equal(hit.value.count, 1);
+  assert.equal(hit.value.results[0].path, "handbook/project.md");
+  assert.equal(hit.value.results[0].id, "project/codegen");
+  assert.ok(hit.value.results[0].score >= 1);
+  const miss = await service.search({ query: "nonexistent-term" });
+  assert.equal(miss.ok, true);
+  assert.equal(miss.value.count, 0);
+  const empty = await service.search({ query: "" });
+  assert.equal(empty.ok, false);
+  assert.equal(empty.error.code, "search-invalid-request");
+  const limited = await service.search({ query: "test", limit: 1 });
+  assert.equal(limited.ok, true);
+  assert.ok(limited.value.results.length <= 1);
+}
+{
   const root = await fixture();
   const health = await (await repository(root)).health();
   assert.equal(health.ok, true);

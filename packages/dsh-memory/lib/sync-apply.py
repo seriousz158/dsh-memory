@@ -44,7 +44,7 @@ MAX_TOTAL_CHANGE_BYTES = 5 * 1024 * 1024
 METADATA_TYPES = {"preference", "fact", "decision", "procedure", "constraint", "observation"}
 METADATA_STATUSES = {"active", "candidate", "conflicted", "superseded", "archived"}
 METADATA_CONFIDENCES = {"high", "medium", "low", "unknown"}
-ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)?$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -598,7 +598,57 @@ def parse_record_metadata(text, relative):
     for source in values.get("source_rollouts", []):
         if not isinstance(source, str) or not source.startswith("rollouts/") or ".." in source or not source.endswith(".md"):
             raise SyncError("invalid-metadata")
+    for field in ("source_hash", "created_by"):
+        if values.get(field) is not None and (
+            not isinstance(values[field], str) or not values[field] or len(values[field]) > 128
+        ):
+            raise SyncError("invalid-metadata")
+    for field in ("review_after", "expires_at"):
+        if values.get(field) is not None and (
+            not isinstance(values[field], str) or not DATE_RE.fullmatch(values[field])
+        ):
+            raise SyncError("invalid-metadata")
     return record_id
+
+
+def metadata_topic_key(record):
+    """Deterministic conflict key: type plus the id's namespace segment."""
+    record_type = record.get("type") or "observation"
+    record_id = record.get("id") or ""
+    slash = record_id.find("/")
+    namespace = "" if slash == -1 else record_id[:slash]
+    return f"{record_type}:{namespace}"
+
+
+def is_record_expired(record, now=None):
+    """Lazy expiry projection: expires_at earlier than now means expired."""
+    expires_at = record.get("expires_at") if isinstance(record, dict) else None
+    if not isinstance(expires_at, str):
+        return False
+    try:
+        expires = time.mktime(time.strptime(expires_at, "%Y-%m-%d"))
+    except (ValueError, OverflowError):
+        return False
+    current = time.time() if now is None else now
+    return expires <= current
+
+
+def resolve_topic_conflict(records, now=None):
+    """Deterministic winner among records sharing a topic key. Expired records
+    never win; status precedence active > candidate > conflicted > superseded >
+    archived; newest updated_at wins; smallest id breaks ties."""
+    precedence = {"active": 0, "candidate": 1, "conflicted": 2, "superseded": 3, "archived": 4}
+    eligible = [record for record in records if not is_record_expired(record, now)]
+    if not eligible:
+        return None
+    return sorted(
+        eligible,
+        key=lambda record: (
+            precedence.get(record.get("status") or "candidate", 1),
+            -(record.get("updated_at") or ""),
+            record.get("id") or "",
+        ),
+    )[0]
 
 
 def validate_staging_limits(staging_fd, manifest):

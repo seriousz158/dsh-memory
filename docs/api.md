@@ -336,3 +336,56 @@ Removes a pending preview without applying it:
 ```
 
 Failures use `preview-invalid-request` or `preview-not-found`.
+
+### `memory.search({ query, limit })` (v0.4)
+
+Local full-text search over the payload records (`handbook/`, `rollouts/`,
+`archive/`). The query is tokenized on non-letter/number boundaries; each
+record is scored by front matter fields (id matches weigh most) and body
+text. Expired records are excluded. Returns matches sorted by score with a
+short body snippet:
+
+```json
+{
+  "ok": true,
+  "value": {
+    "query": "codegen",
+    "count": 1,
+    "results": [
+      {
+        "path": "handbook/project.md",
+        "score": 5,
+        "id": "project/codegen",
+        "type": "decision",
+        "updated_at": "2026-08-10",
+        "snippet": "We chose TypeScript for the codegen pipeline…"
+      }
+    ]
+  }
+}
+```
+
+`limit` defaults to 20. Failures use `search-invalid-request`,
+`repo-unavailable`, or `search-failed`.
+
+### Front matter schema (v0.4)
+
+Record ids may be namespaced with a single `/`: `project/codegen` or
+`user/preferences`. Each segment is `[a-z0-9][a-z0-9-]*`; ids without a
+namespace remain valid.
+
+Provenance fields (all optional, completed as `null` by the host when absent):
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `source_hash` | string | stable hash of the source that produced the record |
+| `created_by` | string | agent or process that created the record |
+| `review_after` | date | suggested review date (`YYYY-MM-DD`) |
+| `expires_at` | date | validity deadline (`YYYY-MM-DD`) |
+
+`expires_at` is a lazy projection: an expired record is excluded from
+`search()` and from deterministic conflict resolution without rewriting its
+front matter. The deterministic conflict key is `type` plus the id's
+namespace (`fact:project`), and the winner is chosen by status precedence
+(active > candidate > conflicted > superseded > archived), then newest
+`updated_at`, then lexicographically smallest id. Expired records never win.

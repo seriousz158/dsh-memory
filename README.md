@@ -76,9 +76,9 @@ v0.3 hardens the sync pipeline against concurrent runs and crashes:
 `dsh-memory-sync --dry-run` remains read-only: it reports the candidate diff
 without touching the live root, the lock, the journal, Git, or the watermark.
 
-## v0.3.1: preview before apply
+## v0.4.0: preview before apply
 
-v0.3.1 lets an operator review a candidate sync before it is applied:
+v0.4.0 lets an operator review a candidate sync before it is applied:
 
 - `dsh-memory-sync --preview <id>` captures the candidate diff (baseline plus
   model edits) as a pending preview under `<root>/.sync/previews/<id>` with a
@@ -94,9 +94,25 @@ v0.3.1 lets an operator review a candidate sync before it is applied:
   expose the same flow to the settings UI, which shows pending previews with
   apply/discard actions.
 
+## v0.4: namespaced records, provenance, and local search
+
+v0.4 extends the record schema and adds a local search capability:
+
+- Record ids may be namespaced with a single `/` (`project/codegen`,
+  `user/preferences`); each segment is `[a-z0-9][a-z0-9-]*`.
+- Front matter gains optional provenance fields: `source_hash`, `created_by`,
+  `review_after`, and `expires_at`. `expires_at` is a lazy expiry projection:
+  expired records are excluded from search and conflict resolution without
+  rewriting their front matter.
+- Deterministic conflict resolution: records sharing a topic key
+  (`type:namespace`) are ordered by status precedence, then newest
+  `updated_at`, then smallest id — no model judgment needed.
+- `memory.search({ query, limit })` does local full-text search over the
+  payload records, scoring front matter and body text and returning a snippet.
+
 ## Compatibility
 
-`v0.3.1` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
+`v0.4.0` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
 tested and locally integrated with a consistently pinned `0.1.0-rc.7` graph:
 
 | Component | Supported version |
@@ -122,14 +138,14 @@ Clone the repository and install its reproducible development/runtime dependenci
 ```zsh
 git clone https://github.com/seriousz158/dsh-memory.git
 cd dsh-memory
-# Use the pinned runtime that this v0.3.1 integration was tested with.
+# Use the pinned runtime that this v0.4.0 integration was tested with.
 npm install --global @deepseek-ai/dsh@0.1.0-rc.7
 dsh --version
 npm ci --ignore-scripts
 ```
 
 This is a source-and-GitHub-Release project. Both workspace packages are
-intentionally marked private, so `v0.3.1` cannot be published to npm by
+intentionally marked private, so `v0.4.0` cannot be published to npm by
 accident.
 
 Install the two local packages into your DSH profile. The installer defaults to

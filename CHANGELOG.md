@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented here.
 
+## [0.4.0] - 2026-08-20
+
+### Added
+
+- Namespaced record ids: a single `/` separator (`project/codegen`,
+  `user/preferences`); each segment is `[a-z0-9][a-z0-9-]*`. Enforced by both
+  the JS metadata parser and the Python staging validator.
+- Optional provenance front matter fields: `source_hash`, `created_by`,
+  `review_after`, `expires_at`. Absent fields parse as `null` and render
+  canonically; invalid values fail closed.
+- Lazy expiry projection: a record with `expires_at` in the past is excluded
+  from `search()` and from deterministic conflict resolution without
+  rewriting its front matter.
+- Deterministic conflict resolution: records sharing a topic key
+  (`type:namespace`) pick a winner by status precedence (active > candidate >
+  conflicted > superseded > archived), then newest `updated_at`, then smallest
+  id. Expired records never win.
+- `memory.search({ query, limit })` local full-text search over payload
+  records with front matter + body scoring and snippets.
+- `memory/search` remote descriptor for the settings UI.
+
+### Compatibility
+
+- DSH `0.1.0-rc.6` remains within the declared peer range.
+- DSH `0.1.0-rc.7` is the reproducible clean-room and locally integrated
+  baseline.
+
+### Safety
+
+- Malformed provenance values and out-of-pattern namespaced ids fail closed in
+  both parsers.
+- Lazy expiry never mutates record files; a later consolidation decides how to
+  archive or remove expired content.
+
 ## [0.3.1] - 2026-08-20
 
 ### Added

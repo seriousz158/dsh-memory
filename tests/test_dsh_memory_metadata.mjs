@@ -4,6 +4,10 @@ import {
   renderFrontMatter,
   MetadataError,
   SCHEMA_VERSION,
+  ID_RE,
+  topicKey,
+  resolveTopicConflict,
+  isExpired,
 } from "../packages/dsh-memory/lib/memory-metadata.js";
 
 const canonical = `---
@@ -94,6 +98,76 @@ source_rollouts:
 
 {
   assert.equal(SCHEMA_VERSION, 1);
+}
+
+{
+  // v0.4: namespaced ids are accepted, multi-segment and malformed ones fail.
+  assert.equal(ID_RE.test("project/codegen"), true);
+  assert.equal(ID_RE.test("user/preferences"), true);
+  assert.equal(ID_RE.test("plain"), true);
+  assert.equal(ID_RE.test("a/b/c"), false);
+  assert.equal(ID_RE.test("Bad/Id"), false);
+  assert.equal(ID_RE.test("/leading"), false);
+  assert.equal(ID_RE.test("trailing/"), false);
+  assert.equal(parseFrontMatter("---\nschema_version: 1\nid: project/codegen\n---\n", "handbook/project.md").id, "project/codegen");
+  assert.throws(() => parseFrontMatter("---\nschema_version: 1\nid: a/b/c\n---\n", "handbook/x.md"), (error) => error.code === "invalid-id");
+}
+
+{
+  // v0.4: provenance fields parse, render, and round-trip.
+  const source = parseFrontMatter(`---
+schema_version: 1
+id: project/codegen
+type: decision
+created_by: sync-agent
+source_hash: sha256-abc123
+review_after: 2026-09-01
+expires_at: 2026-12-31
+---
+body`, "handbook/project.md");
+  assert.equal(source.created_by, "sync-agent");
+  assert.equal(source.source_hash, "sha256-abc123");
+  assert.equal(source.review_after, "2026-09-01");
+  assert.equal(source.expires_at, "2026-12-31");
+  const rendered = renderFrontMatter(source);
+  assert.match(rendered, /created_by: sync-agent/);
+  assert.match(rendered, /source_hash: sha256-abc123/);
+  assert.match(rendered, /expires_at: 2026-12-31/);
+  const reparsed = parseFrontMatter(rendered + "body\n", "handbook/project.md");
+  assert.equal(reparsed.created_by, "sync-agent");
+  // Missing provenance defaults to null.
+  const plain = parseFrontMatter("---\nschema_version: 1\nid: plain\n---\n", "handbook/p.md");
+  assert.equal(plain.source_hash, null);
+  assert.equal(plain.created_by, null);
+  // Invalid provenance fails closed.
+  assert.throws(() => parseFrontMatter("---\nschema_version: 1\nid: x\nsource_hash: ''\n---\n", "handbook/x.md"), (error) => error.code === "invalid-metadata");
+  assert.throws(() => parseFrontMatter("---\nschema_version: 1\nid: x\nexpires_at: not-a-date\n---\n", "handbook/x.md"), (error) => error.code === "invalid-metadata");
+}
+
+{
+  // v0.4: deterministic topic key is type + namespace.
+  assert.equal(topicKey({ id: "project/codegen", type: "decision" }), "decision:project");
+  assert.equal(topicKey({ id: "plain", type: "preference" }), "preference:");
+  assert.equal(topicKey({ id: "a/b", type: "fact" }), "fact:a");
+  // Conflict resolution: active beats candidate, newest updated_at wins,
+  // expired records never win, smallest id breaks ties.
+  const candidates = [
+    { id: "ns/topic", type: "fact", status: "candidate", updated_at: "2026-08-05" },
+    { id: "ns/topic", type: "fact", status: "active", updated_at: "2026-08-01" },
+    { id: "ns/topic", type: "fact", status: "active", updated_at: "2026-08-03", expires_at: "2020-01-01" },
+    { id: "ns/topic", type: "fact", status: "active", updated_at: "2026-08-03" },
+  ];
+  const winner = resolveTopicConflict(candidates);
+  assert.equal(winner.status, "active");
+  assert.equal(winner.updated_at, "2026-08-03");
+  assert.equal(winner.expires_at, undefined);
+  // All expired -> no winner.
+  const stale = candidates.map((record) => ({ ...record, expires_at: "2020-01-01" }));
+  assert.equal(resolveTopicConflict(stale), null);
+  // isExpired projection.
+  assert.equal(isExpired({ expires_at: "2020-01-01" }), true);
+  assert.equal(isExpired({ expires_at: "2999-01-01" }), false);
+  assert.equal(isExpired({}), false);
 }
 
 console.log("dsh-memory metadata tests passed");

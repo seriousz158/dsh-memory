@@ -18,6 +18,7 @@ import {
   releaseOperationLock,
   writeActiveRun,
 } from "./operation-lock.js";
+import { parseFrontMatter, isExpired, topicKey } from "./memory-metadata.js";
 
 const execFile = promisify(execFileCallback);
 const NS = settingsNamespace("memory");
@@ -504,6 +505,59 @@ export class MemoryRepository {
     }
   }
 
+  /**
+   * Local full-text search over the payload records. Tokenizes the query and
+   * scores each record by front matter fields and body text; expired records
+   * are excluded. Returns matches sorted by score with a short snippet.
+   */
+  async search(request) {
+    if (request?.query === undefined || typeof request.query !== "string" || request.query.trim().length === 0) {
+      return failure("search-invalid-request");
+    }
+    const limit = Number.isInteger(request?.limit) && request.limit > 0 ? request.limit : 20;
+    let root;
+    try { root = await this.inspect(); } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
+    try {
+      const tokens = request.query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
+      if (tokens.length === 0) return failure("search-invalid-request");
+      const results = [];
+      const files = await this.payloadFiles(root);
+      for (const file of files) {
+        if (file === "summary.md" || !/\.md$/.test(file)) continue;
+        const content = await readFileSafe(join(root, file), "utf8").catch(() => "");
+        let metadata = null;
+        try { metadata = parseFrontMatter(content, file); } catch { continue; }
+        if (metadata !== null && isExpired(metadata)) continue;
+        const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+        const searchable = [
+          metadata?.id ?? "",
+          metadata?.type ?? "",
+          ...(metadata?.tags ?? []),
+          metadata?.created_by ?? "",
+          metadata?.source_hash ?? "",
+          body,
+        ].join("\n").toLowerCase();
+        let score = 0;
+        for (const token of tokens) {
+          if (searchable.includes(token)) score += 1;
+          if ((metadata?.id ?? "").toLowerCase().includes(token)) score += 3;
+          if ((metadata?.type ?? "").toLowerCase() === token) score += 2;
+          if (body.toLowerCase().includes(token)) score += 1;
+        }
+        if (score > 0) {
+          const lower = body.toLowerCase();
+          const first = lower.indexOf(tokens[0]);
+          const snippet = first === -1 ? body.slice(0, 160) : body.slice(Math.max(0, first - 40), first + 120).replace(/\s+/g, " ").trim();
+          results.push({ path: file, score, id: metadata?.id ?? null, type: metadata?.type ?? null, updated_at: metadata?.updated_at ?? null, snippet });
+        }
+      }
+      results.sort((left, right) => right.score - left.score || String(left.path).localeCompare(String(right.path)));
+      return success({ query: request.query, count: results.length, results: results.slice(0, limit) });
+    } catch (error) {
+      return failure(error?.memoryCode ?? "search-failed");
+    }
+  }
+
   /** List pending (non-expired) previews, newest first. */
   async previews() {
     try {
@@ -723,6 +777,7 @@ export class MemoryService extends TypertRemoteService {
   async previews() { return await this.repository.previews(); }
   async applyPreview(request) { return await this.repository.applyPreview(request); }
   async discardPreview(request) { return await this.repository.discardPreview(request); }
+  async search(request) { return await this.repository.search(request); }
 }
 decorate(MemoryService, "getSettings", Remote("getSettings"));
 decorate(MemoryService, "setEnabled", Remote("setEnabled"));
@@ -734,6 +789,7 @@ decorate(MemoryService, "rollback", Remote("rollback"));
 decorate(MemoryService, "previews", Remote("previews"));
 decorate(MemoryService, "applyPreview", Remote("applyPreview"));
 decorate(MemoryService, "discardPreview", Remote("discardPreview"));
+decorate(MemoryService, "search", Remote("search"));
 
 export function apply(ctx, entry) {
   const settings = new MemorySettingsBridge();
