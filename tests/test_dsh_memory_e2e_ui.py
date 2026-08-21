@@ -5,8 +5,8 @@ Boots a throwaway DSH web profile on an ephemeral port (see
 helpers/dsh-e2e-service.mjs), drives headless Chromium through the Python
 Playwright installation that ships with the machine's browser-acceptance
 tooling, and asserts the rendered panel across desktop/light, dark, and
-narrow viewports, plus the empty-state hiding of the Legacy and preview
-sections on a fresh memory store.
+narrow viewports, plus the empty-state hiding of the preview section on a
+fresh memory store and the absence of the removed Legacy migration UI.
 
 The live memory store, real DSH_HOME, and provider credentials are never
 touched. Exits non-zero on any assertion failure; skipped (exit 0) when
@@ -146,8 +146,9 @@ def main() -> int:
             assert "长期记忆" in txt, "memory section title missing"
             assert "记忆管理" in txt, "memory management card missing"
             assert "最近同步" in txt, "recent sync card missing"
-            # Empty states on a fresh store: Legacy and preview sections hidden.
-            assert "Legacy 记录" not in txt, "Legacy section must be hidden when nothing to migrate"
+            # The Legacy migration UI is intentionally removed; preview remains
+            # hidden when the fresh store has no pending previews.
+            assert "Legacy 记录" not in txt, "Legacy migration UI must remain absent"
             assert "待应用预览" not in txt, "preview section must be hidden when no pending previews"
             # The repository reports healthy (fixture repo), not unavailable.
             match = re.search(r"记忆库[^\n]*", txt)

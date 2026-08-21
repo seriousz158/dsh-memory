@@ -13,15 +13,12 @@ window.__ModuleLoader__.load({
       return transport.ok ? result(transport.value) : transport;
     };
     const enabledRequest = (value) => { if (!value || typeof value !== "object" || typeof value.enabled !== "boolean") throw new Error("invalid memory setting request"); return value; };
-    const migrationRequest = (value) => { if (!value || typeof value !== "object" || typeof value.dryRun !== "boolean") throw new Error("invalid migration request"); return value; };
     const rollbackRequest = (value) => { if (!value || value.confirmation !== "ROLLBACK_MEMORY" || typeof value.runId !== "string" || value.runId.length === 0) throw new Error("invalid rollback request"); return value; };
     const remote = { package: "dsh-memory", descriptors: [
       { id: "dsh-memory#memory/getSettings", service: "memory", namespace: "memory", method: "getSettings", invocation: { kind: "direct" }, parameters: [], result: strict(result) },
       { id: "dsh-memory#memory/setEnabled", service: "memory", namespace: "memory", method: "setEnabled", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict(enabledRequest) }], result: strict(result) },
       { id: "dsh-memory#memory/status", service: "memory", namespace: "memory", method: "status", invocation: { kind: "direct" }, parameters: [], result: strict(result) },
       { id: "dsh-memory#memory/health", service: "memory", namespace: "memory", method: "health", invocation: { kind: "direct" }, parameters: [], result: strict(result) },
-      { id: "dsh-memory#memory/legacyRecords", service: "memory", namespace: "memory", method: "legacyRecords", invocation: { kind: "direct" }, parameters: [], result: strict(result) },
-      { id: "dsh-memory#memory/migrateLegacy", service: "memory", namespace: "memory", method: "migrateLegacy", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict(migrationRequest) }], result: strict(result) },
       { id: "dsh-memory#memory/clear", service: "memory", namespace: "memory", method: "clear", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict((value) => { if (!value || value.confirmation !== "DELETE_MEMORY") throw new Error("invalid clear request"); return value; }) }], result: strict(result) },
       { id: "dsh-memory#memory/runs", service: "memory", namespace: "memory", method: "runs", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict((value) => { if (value !== undefined && value !== null && typeof value !== "object") throw new Error("invalid runs request"); return value; }) }], result: strict(result) },
       { id: "dsh-memory#memory/rollback", service: "memory", namespace: "memory", method: "rollback", invocation: { kind: "direct" }, parameters: [{ name: "request", wire: "request", source: "json", codec: strict(rollbackRequest) }], result: strict(result) },
@@ -130,10 +127,6 @@ window.__ModuleLoader__.load({
             const [repositoryRevision, setRepositoryRevision] = react.useState(0);
             const [rollbackState, setRollbackState] = react.useState(null);
             const [rollbackBusy, setRollbackBusy] = react.useState(false);
-            const [legacyList, setLegacyList] = react.useState(null);
-            const [legacyError, setLegacyError] = react.useState(null);
-            const [migrationBusy, setMigrationBusy] = react.useState(false);
-            const [migrationAction, setMigrationAction] = react.useState(null);
             react.useEffect(() => {
               let disposed = false;
               const load = async () => {
@@ -142,22 +135,6 @@ window.__ModuleLoader__.load({
                   if (!disposed) setRepository(answer.ok ? { value: answer.value } : { error: answer.error.code });
                 } catch {
                   if (!disposed) setRepository({ error: "repo-unavailable" });
-                }
-              };
-              void load();
-              return () => { disposed = true; };
-            }, [repositoryRevision]);
-            react.useEffect(() => {
-              let disposed = false;
-              const load = async () => {
-                try {
-                  const answer = operationResult(await memory.legacyRecords());
-                  if (!disposed) {
-                    setLegacyList(answer.ok ? answer.value.records : null);
-                    setLegacyError(answer.ok ? null : answer.error.code);
-                  }
-                } catch {
-                  if (!disposed) { setLegacyList(null); setLegacyError("legacy-unavailable"); }
                 }
               };
               void load();
@@ -223,21 +200,6 @@ window.__ModuleLoader__.load({
                 setPreviewBusy(false);
               }
             };
-            const migrateLegacy = async () => {
-              if (!legacyList || legacyList.length === 0) return;
-              if (!window.confirm(`迁移 ${legacyList.length} 个 legacy 记录？只会补充 front matter，不会修改记忆正文。`)) return;
-              setMigrationBusy(true); setMigrationAction(null);
-              try {
-                const answer = operationResult(await memory.migrateLegacy({ dryRun: false }));
-                if (!answer.ok) return setMigrationAction({ error: answer.error.code });
-                setMigrationAction({ success: answer.value.migratedCount ? `已迁移 ${answer.value.migratedCount} 个 legacy 记录` : "没有需要迁移的 legacy 记录" });
-                setRepositoryRevision((revision) => revision + 1);
-              } catch {
-                setMigrationAction({ error: "legacy-migration-failed" });
-              } finally {
-                setMigrationBusy(false);
-              }
-            };
             const clear = async () => {
               if (stage < 2) return setStage(stage + 1);
               setBusy(true); setState(null);
@@ -297,21 +259,8 @@ window.__ModuleLoader__.load({
                   rollbackState && jsx.jsx("span", { className: rollbackState.error ? "dshmu_status dshmu_status--error" : "dshmu_status dshmu_status--success", children: rollbackState.error ? `回滚失败：${rollbackState.error}` : rollbackState.success }),
                 ] }),
               ] }),
-              ((legacyList === null || legacyList.length > 0) || (previewList === null || previewList.length > 0)) && jsx.jsxs("div", { className: "dshmu_grid", children: [
-                (legacyList === null || legacyList.length > 0) && jsx.jsxs("section", { className: "dshmu_card", "aria-label": "Legacy 记录", children: [
-                  jsx.jsxs("div", { className: "dshmu_cardHeader", children: [
-                    jsx.jsxs("div", { className: "dshmu_cardTitleGroup", children: [
-                      jsx.jsx("span", { className: "dshmu_title", children: "Legacy 记录" }),
-                      jsx.jsx("span", { className: legacyError ? "dshmu_status dshmu_status--error" : "dshmu_status", children: legacyList === null ? legacyError ? `legacy 记录不可用：${legacyError}` : "正在读取 legacy 记录…" : `待迁移 ${legacyList.length} 个 legacy 记录` }),
-                    ] }),
-                  ] }),
-                  legacyList && legacyList.map((record) => jsx.jsx("span", { className: "dshmu_status", children: `${record.path} → ${record.id}` }, record.path)),
-                  jsx.jsxs("div", { className: "dshmu_actions", children: [
-                    jsx.jsx("button", { type: "button", className: "dshmu_button dshmu_button--primary", disabled: !available || migrationBusy || !legacyList || legacyList.length === 0, onClick: migrateLegacy, children: migrationBusy ? "正在迁移…" : "迁移 legacy 记录" }),
-                  ] }),
-                  migrationAction && jsx.jsx("span", { className: migrationAction.error ? "dshmu_status dshmu_status--error" : "dshmu_status dshmu_status--success", children: migrationAction.error ? `迁移失败：${migrationAction.error}` : migrationAction.success }),
-                ] }),
-                (previewList === null || previewList.length > 0) && jsx.jsxs("section", { className: "dshmu_card", "aria-label": "待应用预览", children: [
+              (previewList === null || previewList.length > 0) && jsx.jsxs("div", { className: "dshmu_grid", children: [
+                jsx.jsxs("section", { className: "dshmu_card", "aria-label": "待应用预览", children: [
                   jsx.jsxs("div", { className: "dshmu_cardHeader", children: [
                     jsx.jsxs("div", { className: "dshmu_cardTitleGroup", children: [
                       jsx.jsx("span", { className: "dshmu_title", children: "待应用预览" }),

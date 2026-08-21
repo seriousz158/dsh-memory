@@ -125,10 +125,10 @@ v0.5 adds operational tooling around the memory store:
   unsupported) and the integration tool defaults.
 - The release checklist now verifies the backup round-trip before release.
 
-## v0.6: library-backed legacy migration and UI visibility
+## v0.6: library-backed legacy migration
 
 v0.6 moves legacy-record inspection and migration into the host library so the
-CLI and settings UI use the same safe transaction path:
+CLI and host API use the same safe transaction path:
 
 - `memory.legacyRecords()` returns metadata-only entries for legacy Markdown
   files (path, deterministic id, generated front matter, dates, and size).
@@ -139,8 +139,9 @@ CLI and settings UI use the same safe transaction path:
 - `dsh-memory-migrate --dry-run` and `--apply` delegate to those library APIs.
   The journal records operation metadata only; it never contains memory body,
   transcript, prompt, or credential content.
-- The settings UI shows pending legacy paths and generated ids and offers an
-  explicit migration action. It does not expose the filesystem root or run Git.
+- The settings UI intentionally does not expose legacy migration controls. Use
+  `dsh-memory-migrate --dry-run|--apply` or the host API when migration is
+  explicitly needed; the UI never exposes the filesystem root or runs Git.
 
 ## v0.7: browser end-to-end tests
 
@@ -154,10 +155,10 @@ behavior is verified, not just snapshot-checked:
   plugins via `--patch`. The live `~/.dsh`, memory store, and provider
   credentials are never touched.
 - Headless Chromium drives the real settings popover and asserts the
-  desktop/light layout, the empty-state hiding of the Legacy and preview
-  sections on a fresh store, the enable switch, the theme token contract
-  (`var(--dsw-*)` in the injected stylesheet), and the 480px narrow layout
-  with no horizontal overflow.
+  desktop/light layout, absence of the removed Legacy migration UI, empty
+  preview state, the enable switch, the theme token contract (`var(--dsw-*)`
+  in the injected stylesheet), and the 480px narrow layout with no horizontal
+  overflow.
 - The suite runs as part of `npm test` and skips cleanly when the Python
   Playwright browser-acceptance tooling is unavailable (e.g. CI images).
 

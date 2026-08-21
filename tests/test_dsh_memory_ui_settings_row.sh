@@ -13,15 +13,10 @@ grep -Fq -- 'memory.getSettings()' "$CLIENT"
 grep -Fq -- 'memory.setEnabled({ enabled: value })' "$CLIENT"
 grep -Fq -- 'memory.status()' "$CLIENT"
 grep -Fq -- 'memory.clear({ confirmation: "DELETE_MEMORY" })' "$CLIENT"
-grep -Fq -- 'memory.legacyRecords()' "$CLIENT"
-grep -Fq -- 'memory.migrateLegacy({ dryRun: false })' "$CLIENT"
-grep -Fq -- 'dsh-memory#memory/legacyRecords' "$CLIENT"
-grep -Fq -- 'dsh-memory#memory/migrateLegacy' "$CLIENT"
-grep -Fq -- 'const migrationRequest' "$CLIENT"
-grep -Fq -- 'children: "Legacy 记录"' "$CLIENT"
-grep -Fq -- '待迁移' "$CLIENT"
-grep -Fq -- 'record.path} → ${record.id}' "$CLIENT"
-grep -Fq -- '(legacyList === null || legacyList.length > 0)' "$CLIENT"
+if rg -q -- 'legacyRecords|migrateLegacy|Legacy 记录|待迁移|migrationRequest|migrationBusy|migrationAction' "$CLIENT"; then
+  print -u2 -- 'dsh-memory-ui must not expose the legacy migration UI.'
+  exit 1
+fi
 grep -Fq -- 'className: "dshmu_memory"' "$CLIENT"
 grep -Fq -- 'className: "dshmu_panel dshmu_panel--primary"' "$CLIENT"
 grep -Fq -- 'className: "dshmu_card"' "$CLIENT"
