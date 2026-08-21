@@ -36,7 +36,14 @@ chmod +x "$TEST_INTEGRATION/dsh-memory-init"
 cat > "$TEST_BIN/fake-dsh" <<'EOF'
 #!/bin/zsh
 set -euo pipefail
-[[ "$#" -eq 3 && "$1" == "--profile" && "$2" == "headless" && -n "$3" ]]
+[[ "$#" -eq 5 && "$1" == "--profile" && "$2" == "headless" && "$3" == "--patch" && -f "$4" && -n "$5" ]]
+grep -q -- '^- id: session-persistence-jsonl$' "$4"
+grep -q -- 'headless-sessions' "$4"
+[[ "$4" != "$DSH_HOME/sessions" ]]
+PRIVATE_SESSION_ROOT="$(/usr/bin/awk '/^[[:space:]]*root:/{print $2; exit}' "$4")"
+mkdir -p "$PRIVATE_SESSION_ROOT"
+: > "$PRIVATE_SESSION_ROOT/session.jsonl.zstd"
+print -r -- "$PRIVATE_SESSION_ROOT" > "$HOME/private-session-root.txt"
 [[ "${DSH_PERMISSION_MODE:-}" == "workspace-write" ]]
 # Simulate a model edit inside the staging worktree (the sync cds into staging).
 printf 'synthetic memory entry\n' > handbook/synthetic-entry.md
@@ -60,6 +67,10 @@ env \
   LC_SYNTHETIC="names-only" \
   PATH="$TEST_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
   zsh "$TEST_INTEGRATION/dsh-memory-sync" > "$ENV_NAMES"
+
+PRIVATE_SESSION_ROOT="$(cat "$TEST_HOME/private-session-root.txt")"
+[[ "$PRIVATE_SESSION_ROOT" != "$TEST_DSH_HOME/sessions" ]]
+[[ ! -e "$PRIVATE_SESSION_ROOT" ]]
 
 for allowed_name in \
   HOME DSH_HOME DSH_MEMORY_ROOT PATH TMPDIR LANG LC_SYNTHETIC \

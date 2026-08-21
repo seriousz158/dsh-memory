@@ -293,6 +293,8 @@ fi
 STAGING_PARENT="${TMPDIR:-/tmp}/dsh-memory-sync-$$"
 STAGING="$STAGING_PARENT/staging"
 MANIFEST="$STAGING_PARENT/manifest.json"
+HEADLESS_SESSION_ROOT="$STAGING_PARENT/headless-sessions"
+HEADLESS_SESSION_PATCH="$STAGING_PARENT/headless-session.patch.yml"
 mkdir -p "$STAGING_PARENT"
 umask 077
 
@@ -302,6 +304,19 @@ apply_output="$(sync_apply stage-copy --root "$DSH_MEMORY_ROOT" --staging "$STAG
   rm -rf -- "$STAGING_PARENT"
   exit 1
 }
+
+# The rc.7 headless bundle deliberately persists every one-shot session. If
+# it uses the normal DSH_HOME, each memory consolidation appears in the Web
+# session list and must be archived manually. Keep the DSH home (settings,
+# profiles, runtime, and credentials policy) unchanged, but route only this
+# child session backend to the per-run private directory. The directory lives
+# under STAGING_PARENT and is removed with the rest of the transaction.
+cat > "$HEADLESS_SESSION_PATCH" <<EOF
+- id: session-persistence-jsonl
+  config:
+    root: $HEADLESS_SESSION_ROOT
+EOF
+chmod 600 "$HEADLESS_SESSION_PATCH"
 
 # Headless DSH writes only to the staging payload. It never sees the live
 # memory root, never runs Git, and never advances the watermark.
@@ -343,7 +358,8 @@ done
 # Run the model inside the staging worktree so its relative writes land there.
 (
   cd "$STAGING"
-  /usr/bin/env -i "${CHILD_ENV[@]}" "$DSH_EXECUTABLE" --profile headless "$STAGING_PROMPT"
+  /usr/bin/env -i "${CHILD_ENV[@]}" "$DSH_EXECUTABLE" --profile headless \
+    --patch "$HEADLESS_SESSION_PATCH" "$STAGING_PROMPT"
 )
 # The process exited successfully, so every eligible log was delivered to
 # headless DSH. Per-session NO_SIGNAL results are deliberately not guessed from
