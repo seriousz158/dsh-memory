@@ -84,7 +84,7 @@ resolve_node_executable() {
   typeset -a nvm_candidates
   is_supported_node() {
     [[ -x "$1" ]] || return 1
-    version_major="$($1 --version 2>/dev/null | /usr/bin/sed -E 's/^v([0-9]+).*/\1/' || true)"
+    version_major="$("$1" --version 2>/dev/null | /usr/bin/sed -E 's/^v([0-9]+).*/\1/' || true)"
     [[ "$version_major" =~ '^[0-9]+$' ]] && (( version_major >= 22 ))
   }
   candidate="$(command -v node 2>/dev/null || true)"
