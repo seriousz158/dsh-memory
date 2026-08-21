@@ -80,6 +80,8 @@ loading it: a LaunchAgent does not reliably inherit the one-time shell exports
 used during installation.
 
 The sync command does not install DSH. It requires a `dsh` executable on `PATH`, or a deliberately configured `DSH_BIN`. It performs no work while `memory.enabled` is false.
+The wrapper also discovers a local Homebrew or nvm Node runtime when launchd
+starts with a minimal `PATH`; no interactive shell profile is required.
 
 The v0.7.0 host and UI packages still declare the runtime peer range
 `@deepseek-ai/dsh@^0.1.0-rc.6`, so DSH `rc.6` remains peer-compatible. The

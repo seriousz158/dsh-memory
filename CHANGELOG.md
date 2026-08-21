@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- LaunchAgent sync now discovers a local Node runtime when launchd provides a
+  minimal `PATH`, so the pinned `#!/usr/bin/env node` DSH launcher does not
+  fail before headless consolidation.
+- Workspace and package lock metadata now consistently records v0.7.0.
+
 ## [0.7.0] - 2026-08-21
 
 ### Added
