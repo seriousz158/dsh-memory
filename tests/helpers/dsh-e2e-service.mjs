@@ -231,7 +231,8 @@ export async function startIsolatedService(options = {}) {
 
 export function stopIsolatedService() {
   if (!service) return;
-  service.child.kill("SIGTERM");
+  try { process.kill(-service.child.pid, "SIGTERM"); }
+  catch { try { service.child.kill("SIGTERM"); } catch { /* already gone */ } }
   service = null;
 }
 
@@ -241,7 +242,8 @@ export async function stopDetachedService(home) {
     const { readFile, rm } = await import("node:fs/promises");
     const pid = Number((await readFile(join(home, "service.pid"), "utf8")).trim());
     if (Number.isFinite(pid) && pid > 0) {
-      try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
+      try { process.kill(-pid, "SIGTERM"); }
+      catch { try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ } }
     }
     await rm(home, { recursive: true, force: true });
   } catch {

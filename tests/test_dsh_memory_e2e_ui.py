@@ -108,9 +108,19 @@ def stop_service(service: dict | None) -> None:
     pid = service.get("pid")
     if pid:
         try:
-            os.kill(pid, 15)  # SIGTERM
+            pgid = os.getpgid(pid)
+            if pgid != os.getpgrp():
+                os.killpg(pgid, 15)  # detached DSH process group
+            else:
+                os.kill(pid, 15)
         except OSError:
             pass
+        for _ in range(20):
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            time.sleep(0.1)
     home = service.get("home")
     if home:
         shutil.rmtree(home, ignore_errors=True)
