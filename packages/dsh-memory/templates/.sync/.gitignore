@@ -1,3 +1,6 @@
 operation.lock
 active-run.json
 previews/
+usage.json
+usage.lock/
+.usage.*.tmp

@@ -10,6 +10,7 @@
 - `archive/`：已过时或被替代的条目。
 - `scripts/filter_session.py`：将 DSH 会话日志转为精简、脱敏的转录。
 - `.last-sync`：增量同步水位；首次创建时不回溯旧会话。
+- `.sync/usage.json`：本地读取使用计数与最近使用时间；只存元数据，不进 Git。
 
 ## 规则
 

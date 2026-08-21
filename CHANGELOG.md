@@ -13,6 +13,27 @@ All notable changes to this project are documented here.
 - Removed the Legacy migration card and controls from the settings UI; the
   host API and `dsh-memory-migrate` CLI remain available.
 
+## [0.8.0] - 2026-08-21
+
+### Added
+
+- `memory.context({ query, limit })` returns bounded memory records with stable
+  source citations and deterministic usage-aware ordering.
+- Metadata-only usage feedback is stored atomically in the private
+  `.sync/usage.json` sidecar (`usage_count`, `last_usage`) and never enters
+  payload files or journal records.
+- Existing memory repositories add the sidecar to local Git excludes without
+  modifying tracked files; new repositories include it in `.sync/.gitignore`.
+
+### Safety
+
+- Context reads are host-owned and read-only with a 20-record limit and a
+  4 KiB per-record body bound; UTF-8 truncation is boundary-safe.
+- Expired records are excluded, citations expose only relative payload paths
+  and optional record ids, and no UI or filesystem path selector was added.
+- Usage lock ownership and stale temporary-file cleanup prevent concurrent
+  readers from losing counts or leaking sidecar artifacts into Git.
+
 ## [0.7.0] - 2026-08-21
 
 ### Added

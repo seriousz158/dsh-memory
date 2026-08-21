@@ -143,6 +143,24 @@ CLI and host API use the same safe transaction path:
   `dsh-memory-migrate --dry-run|--apply` or the host API when migration is
   explicitly needed; the UI never exposes the filesystem root or runs Git.
 
+## v0.8: usage feedback and cited memory context
+
+v0.8 adds a host-owned, read-only context path for future model tools without
+adding settings UI:
+
+- `memory.context({ query, limit })` returns bounded memory bodies with stable
+  source citations (`[source: ... · id: ...]`), while preserving the existing
+  `memory.search()` API.
+- Each context read updates metadata-only usage in `.sync/usage.json` with
+  `usage_count` and `last_usage`; the sidecar is private, atomic, and ignored
+  by Git. Existing repositories also receive a local `.git/info/exclude`
+  entry without changing tracked memory files.
+- Query matches are selected deterministically, then ordered by usage count,
+  recent use, and path. Expired records are never returned.
+
+The context API is deliberately host-only in this release. A later read-only
+tool can expose it to the model without granting filesystem or Git access.
+
 ## v0.7: browser end-to-end tests
 
 v0.7 adds a real browser test suite for the settings UI so the panel's
@@ -164,7 +182,7 @@ behavior is verified, not just snapshot-checked:
 
 ## Compatibility
 
-`v0.7.0` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
+`v0.8.0` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
 tested and locally integrated with a consistently pinned `0.1.0-rc.7` graph:
 
 | Component | Supported version |
@@ -190,14 +208,14 @@ Clone the repository and install its reproducible development/runtime dependenci
 ```zsh
 git clone https://github.com/seriousz158/dsh-memory.git
 cd dsh-memory
-# Use the pinned runtime that this v0.7.0 integration was tested with.
+# Use the pinned runtime that this v0.8.0 integration was tested with.
 npm install --global @deepseek-ai/dsh@0.1.0-rc.7
 dsh --version
 npm ci --ignore-scripts
 ```
 
 This is a source-and-GitHub-Release project. Both workspace packages are
-intentionally marked private, so `v0.7.0` cannot be published to npm by
+intentionally marked private, so `v0.8.0` cannot be published to npm by
 accident.
 
 Install the two local packages into your DSH profile. The installer defaults to

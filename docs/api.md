@@ -419,7 +419,8 @@ short body snippet:
         "id": "project/codegen",
         "type": "decision",
         "updated_at": "2026-08-10",
-        "snippet": "We chose TypeScript for the codegen pipeline…"
+        "snippet": "We chose TypeScript for the codegen pipeline…",
+        "citation": "[source: handbook/project.md · id: project/codegen]"
       }
     ]
   }
@@ -428,6 +429,44 @@ short body snippet:
 
 `limit` defaults to 20. Failures use `search-invalid-request`,
 `repo-unavailable`, or `search-failed`.
+
+### `memory.context({ query, limit })` (v0.8)
+
+Host-owned read path for a bounded memory context. `query` is optional; when
+omitted, records are ordered by usage feedback. When present, deterministic
+full-text matches are selected first and then ordered by `usage_count`,
+`last_usage`, and path. Expired records are excluded.
+
+```json
+{
+  "ok": true,
+  "value": {
+    "query": "codegen",
+    "count": 1,
+    "records": [
+      {
+        "path": "handbook/project.md",
+        "id": "project/codegen",
+        "type": "decision",
+        "content": "We chose TypeScript for the codegen pipeline.\n",
+        "truncated": false,
+        "citation": "[source: handbook/project.md · id: project/codegen]",
+        "usage_count": 3,
+        "last_usage": "2026-08-21T02:00:00.000Z",
+        "score": 5
+      }
+    ]
+  }
+}
+```
+
+`limit` defaults to 10 and is restricted to 1–20. Each returned body is
+bounded to 4 KiB. A successful context read increments metadata-only usage in
+`.sync/usage.json`; the sidecar is atomically written with owner-only
+permissions and is excluded from Git. It contains no memory body, transcript,
+prompt, or credential. `truncated` is true when the body reached the 4 KiB
+limit. Failures use `context-invalid-request`,
+`usage-invalid`, `unsafe-layout`, `repo-unavailable`, or `context-failed`.
 
 ### Front matter schema (v0.4)
 

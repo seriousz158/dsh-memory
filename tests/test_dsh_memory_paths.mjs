@@ -26,6 +26,10 @@ await cp(
   join(fixture, "dsh-memory", "lib", "memory-tree.js"),
 );
 await cp(
+  join(project, "packages/dsh-memory/lib/memory-usage.js"),
+  join(fixture, "dsh-memory", "lib", "memory-usage.js"),
+);
+await cp(
   join(project, "packages/dsh-memory/lib/legacy-migration.js"),
   join(fixture, "dsh-memory", "lib", "legacy-migration.js"),
 );
