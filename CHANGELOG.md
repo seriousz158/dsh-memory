@@ -10,6 +10,8 @@ All notable changes to this project are documented here.
   minimal `PATH`, so the pinned `#!/usr/bin/env node` DSH launcher does not
   fail before headless consolidation.
 - Workspace and package lock metadata now consistently records v0.7.0.
+- Removed the Legacy migration card and controls from the settings UI; the
+  host API and `dsh-memory-migrate` CLI remain available.
 
 ## [0.7.0] - 2026-08-21
 
