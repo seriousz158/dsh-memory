@@ -135,8 +135,18 @@ export async function startIsolatedService(options = {}) {
   await mkdir(join(memoryRoot, "handbook"), { recursive: true });
   await mkdir(join(memoryRoot, "rollouts"), { recursive: true });
   await mkdir(join(memoryRoot, "archive"), { recursive: true });
+  await mkdir(join(memoryRoot, ".sync"), { recursive: true, mode: 0o700 });
   await writeFile(join(memoryRoot, "summary.md"), "# 长期记忆总览\n\n（空）\n");
   await writeFile(join(memoryRoot, "README.md"), "# Memory\n\nIsolated E2E fixture.\n");
+  await writeFile(join(memoryRoot, ".sync", ".gitignore"), [
+    "operation.lock",
+    "active-run.json",
+    "previews/",
+    "usage.json",
+    "usage.lock/",
+    ".usage.*.tmp",
+    "",
+  ].join("\n"), { mode: 0o600 });
   await execFile("/usr/bin/git", ["-C", memoryRoot, "init", "-q"]);
   await execFile("/usr/bin/git", ["-C", memoryRoot, "add", "-A"]);
   await execFile("/usr/bin/git", ["-C", memoryRoot, "commit", "-q", "-m", "fixture: empty memory repository"]);
