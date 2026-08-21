@@ -79,6 +79,7 @@ We chose TypeScript for the codegen pipeline.\n`);
   assert.equal(hit.value.count, 1);
   assert.equal(hit.value.results[0].path, "handbook/project.md");
   assert.equal(hit.value.results[0].id, "project/codegen");
+  assert.equal(hit.value.results[0].citation, "[source: handbook/project.md · id: project/codegen]");
   assert.ok(hit.value.results[0].score >= 1);
   const miss = await service.search({ query: "nonexistent-term" });
   assert.equal(miss.ok, true);
