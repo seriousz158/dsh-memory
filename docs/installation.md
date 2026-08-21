@@ -81,7 +81,7 @@ used during installation.
 
 The sync command does not install DSH. It requires a `dsh` executable on `PATH`, or a deliberately configured `DSH_BIN`. It performs no work while `memory.enabled` is false.
 
-The v0.6.0 host and UI packages still declare the runtime peer range
+The v0.7.0 host and UI packages still declare the runtime peer range
 `@deepseek-ai/dsh@^0.1.0-rc.6`, so DSH `rc.6` remains peer-compatible. The
 repository's reproducible clean-room and local integration baseline is
 `0.1.0-rc.7`, because the registry's `rc.6` transitive peer graph is not
