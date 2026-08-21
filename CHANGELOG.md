@@ -13,6 +13,15 @@ All notable changes to this project are documented here.
 - Removed the Legacy migration card and controls from the settings UI; the
   host API and `dsh-memory-migrate` CLI remain available.
 
+### Changed
+
+- Reworked the memory settings block into native settings-style accordion
+  rows: repository and long-term-memory summaries stay compact, while recent
+  syncs, pending previews, and destructive actions expand inline.
+- Added keyboard/focus-safe inline confirmations, semantic status tones, and
+  empty-preview hiding. Browser E2E now links the source workspaces directly
+  instead of exercising an installed profile copy.
+
 ## [0.8.0] - 2026-08-21
 
 ### Added
