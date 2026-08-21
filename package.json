@@ -1,8 +1,9 @@
 {
-  "name": "dsh-memory-workspace",
+  "name": "dsh-git-memory",
   "version": "0.8.0",
-  "private": true,
-  "description": "Portable DSH long-term memory host and settings UI",
+  "private": false,
+  "description": "A local Git-backed long-term memory bundle for DeepSeek Harness",
+  "type": "module",
   "workspaces": [
     "packages/dsh-memory",
     "packages/dsh-memory-ui"
@@ -28,5 +29,60 @@
     "test:memory": "zsh tests/run-memory-tests.sh",
     "test:guards": "zsh tests/test_release_guards.sh",
     "test": "npm run scan:secrets && npm run test:public-tree && npm run test:memory && npm run test:guards"
+  },
+  "main": "./packages/dsh-git-memory/lib/index.js",
+  "exports": {
+    ".": "./packages/dsh-git-memory/lib/index.js",
+    "./client": "./packages/dsh-git-memory/client/client.js",
+    "./cordis.patch.yml": "./packages/dsh-git-memory/cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "packages/dsh-git-memory/lib",
+    "packages/dsh-git-memory/client",
+    "packages/dsh-git-memory/cordis.patch.yml"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seriousz158/dsh-memory.git"
+  },
+  "license": "MIT",
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "memory",
+    "git"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./packages/dsh-git-memory/cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-api-remotes": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-connection": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "react": "^18.2.0"
   }
 }

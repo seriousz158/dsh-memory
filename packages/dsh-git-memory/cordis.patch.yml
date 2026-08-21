@@ -1,0 +1,5 @@
+# Public bundle patch: activate the Git-backed memory host plugin.
+# The browser half is discovered from the package's dsh.client declaration.
+- insert:
+    - id: memory
+      name: dsh-git-memory

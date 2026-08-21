@@ -213,6 +213,25 @@ later releases are unverified until they pass this repository's test suite.
 
 ## Install
 
+### DSH plugin bundle (recommended)
+
+The repository root is also a public DSH bundle named `dsh-git-memory`. It
+contains the host plugin, the settings-page client bundle, and its
+`dsh.bundle` patch, so one install activates both halves:
+
+```zsh
+# GitHub source install (works before or without an npm publication)
+dsh plugin --profile web add github:seriousz158/dsh-memory
+
+# Registry install, once the package is available from npm
+dsh plugin --profile web add dsh-git-memory
+```
+
+Restart the selected DSH profile after installing. The bundle does not include
+any memory data, session logs, credentials, or the local `.dsh` directory.
+
+### Source checkout (development / local integration)
+
 Clone the repository and install its reproducible development/runtime dependencies:
 
 ```zsh
@@ -224,9 +243,10 @@ dsh --version
 npm ci --ignore-scripts
 ```
 
-This is a source-and-GitHub-Release project. Both workspace packages are
-intentionally marked private, so `v0.8.0` cannot be published to npm by
-accident.
+The two workspace implementation packages remain private; only the root
+`dsh-git-memory` bundle is publishable. This keeps the internal host/UI package
+names stable while avoiding the already-occupied unscoped `dsh-memory` npm
+name.
 
 Install the two local packages into your DSH profile. The installer defaults to
 `~/.dsh`. If you use a non-default DSH or memory path, keep the same values in

@@ -85,6 +85,28 @@ NODE
 expect_workspace_license dsh-memory
 expect_workspace_license dsh-memory-ui
 
+root_pack="$(cd "$PROJECT_DIR" && npm pack --dry-run --json --ignore-scripts)"
+node - "$root_pack" <<'NODE'
+const packed = JSON.parse(process.argv[2])[0];
+const files = new Set((packed.files ?? []).map((entry) => entry.path));
+for (const required of [
+  "LICENSE",
+  "README.md",
+  "package.json",
+  "packages/dsh-git-memory/cordis.patch.yml",
+  "packages/dsh-git-memory/client/client.js",
+]) {
+  if (!files.has(required)) {
+    console.error(`public dsh-git-memory bundle is missing ${required}`);
+    process.exit(1);
+  }
+}
+if (!packed.name || packed.name !== "dsh-git-memory") {
+  console.error(`unexpected public package name: ${packed.name ?? "<missing>"}`);
+  process.exit(1);
+}
+NODE
+
 fixture="$(make_fixture untracked-npmrc)"
 prefix="ghp"
 suffix="abcdef0123456789abcdef0123456789abcdef"
