@@ -21,6 +21,24 @@ npm ci --ignore-scripts
 
 ## Install into DSH
 
+### Public bundle
+
+For a normal DSH profile, install the combined host + Web client bundle:
+
+```zsh
+# GitHub source install (no npm login required)
+dsh plugin --profile web add github:seriousz158/dsh-memory
+
+# Use this shorter form after the public npm package is published
+dsh plugin --profile web add dsh-git-memory
+```
+
+The package declares a `dsh.bundle` patch and a Web `dsh.client` entry. DSH
+therefore adds the memory host row and discovers the settings UI from the same
+package; no manual `cordis.patch.yml` edit or profile symlink is needed.
+
+### Local source checkout
+
 ```zsh
 ./integrations/dsh/install.sh
 ```

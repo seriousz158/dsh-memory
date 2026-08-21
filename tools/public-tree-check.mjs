@@ -63,6 +63,17 @@ const allowed = new Set([
   "packages/dsh-memory/templates/README.md",
   "packages/dsh-memory/templates/.sync/.gitignore",
   "packages/dsh-memory/templates/scripts/filter_session.py",
+  "packages/dsh-git-memory/cordis.patch.yml",
+  "packages/dsh-git-memory/client/client.js",
+  "packages/dsh-git-memory/lib/index.js",
+  "packages/dsh-git-memory/lib/legacy-migration.js",
+  "packages/dsh-git-memory/lib/memory-metadata.js",
+  "packages/dsh-git-memory/lib/memory-tree.js",
+  "packages/dsh-git-memory/lib/memory-usage.js",
+  "packages/dsh-git-memory/lib/operation-lock.js",
+  "packages/dsh-git-memory/lib/safe-clear.py",
+  "packages/dsh-git-memory/lib/sync-apply.py",
+  "packages/dsh-git-memory/lib/sync-transaction.js",
   "packages/dsh-memory-ui/package.json",
   "packages/dsh-memory-ui/LICENSE",
   "packages/dsh-memory-ui/lib/client.js",
@@ -79,6 +90,7 @@ const allowed = new Set([
   "tests/test_dsh_memory_operation_lock.mjs",
   "tests/test_dsh_memory_backup.sh",
   "tests/test_dsh_memory_migrate.sh",
+  "tests/test_dsh_memory_marketplace.mjs",
   "tests/test_dsh_memory_migration_api.mjs",
   "tests/test_dsh_memory_paths.mjs",
   "tests/test_dsh_memory_preview.mjs",
@@ -98,6 +110,7 @@ const allowed = new Set([
   "tools/public-tree-check.mjs",
   "tools/secret-scan.mjs",
   "tools/secret-scan.sh",
+  "tools/sync-marketplace-bundle.mjs",
 ]);
 const findings = [];
 const add = (label, file) => {
@@ -260,10 +273,11 @@ try {
       || /(?:\.zstd|\.pyc|\.pyo|\.log|\.DS_Store)$/i.test(file)
     );
     for (const workspace of [
-      { name: "dsh-memory", directory: "packages/dsh-memory" },
-      { name: "dsh-memory-ui", directory: "packages/dsh-memory-ui" },
+      { name: "dsh-memory", directory: "packages/dsh-memory", args: ["--workspace", "dsh-memory"] },
+      { name: "dsh-memory-ui", directory: "packages/dsh-memory-ui", args: ["--workspace", "dsh-memory-ui"] },
+      { name: "dsh-git-memory", directory: ".", args: [] },
     ]) {
-      const result = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts", "--workspace", workspace.name], {
+      const result = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts", ...workspace.args], {
         cwd: snapshot,
         encoding: "utf8",
       });

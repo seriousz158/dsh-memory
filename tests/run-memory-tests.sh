@@ -16,6 +16,7 @@ node tests/test_dsh_memory_metadata.mjs
 node tests/test_dsh_memory_usage.mjs
 node tests/test_dsh_memory_context.mjs
 node tests/test_dsh_memory_tools.mjs
+node tests/test_dsh_memory_marketplace.mjs
 node tests/test_dsh_memory_paths.mjs
 node tests/test_dsh_memory_preview.mjs
 node tests/test_dsh_memory_redaction.mjs

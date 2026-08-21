@@ -9,7 +9,7 @@ All notable changes to this project are documented here.
 - LaunchAgent sync now discovers a local Node runtime when launchd provides a
   minimal `PATH`, so the pinned `#!/usr/bin/env node` DSH launcher does not
   fail before headless consolidation.
-- Workspace and package lock metadata now consistently records v0.7.0.
+- Workspace and package lock metadata now consistently records v0.8.0.
 - Removed the Legacy migration card and controls from the settings UI; the
   host API and `dsh-memory-migrate` CLI remain available.
 - Automatic headless consolidation sessions now use a private per-run
@@ -34,6 +34,10 @@ All notable changes to this project are documented here.
   metadata-only usage feedback.
 - Zero-change sync runs now write a `no_change` journal and advance the
   watermark, while dry-run and preview modes remain side-effect free.
+- Added the public `dsh-git-memory` root bundle: one DSH install now activates
+  the Git-backed memory host and the accordion settings client through a
+  standard `dsh.bundle` + `dsh.client` manifest. The internal workspace
+  packages remain private.
 
 ## [0.8.0] - 2026-08-21
 
