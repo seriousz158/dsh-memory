@@ -97,13 +97,38 @@ for forbidden_name in \
   fi
 done
 
+# launchd supplies a minimal PATH. The sync wrapper must still be able to run
+# a standard `#!/usr/bin/env node` DSH launcher by discovering Homebrew/nvm
+# Node, without requiring a shell profile to be sourced.
+NODE_SHEBANG_DSH="$TEST_BIN/node-shebang-dsh"
+cat > "$NODE_SHEBANG_DSH" <<'EOF'
+#!/usr/bin/env node
+const fs = require("node:fs");
+fs.writeFileSync("handbook/node-launchd-entry.md", "synthetic node launchd entry\n");
+EOF
+chmod +x "$NODE_SHEBANG_DSH"
+touch -t 200001010000 "$TEST_MEMORY_ROOT/.last-sync"
+touch -t 200001010001 "$TEST_DSH_HOME/sessions/session.jsonl.zstd"
+env \
+  HOME="$TEST_HOME" \
+  DSH_HOME="$TEST_DSH_HOME" \
+  DSH_MEMORY_ROOT="$TEST_MEMORY_ROOT" \
+  DSH_BIN="$NODE_SHEBANG_DSH" \
+  DPSK_MEMORY_SYNC_HELPER="$TEST_INTEGRATION/sync-apply.py" \
+  PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+  zsh "$TEST_INTEGRATION/dsh-memory-sync" >/dev/null
+[[ -f "$TEST_MEMORY_ROOT/handbook/node-launchd-entry.md" ]] || {
+  print -u2 -- "minimal PATH node shebang launcher did not apply"
+  exit 1
+}
+
 /usr/bin/python3 - "$TEST_MEMORY_ROOT/.sync/runs" <<'PY'
 import json
 import pathlib
 import sys
 
 run_files = sorted(pathlib.Path(sys.argv[1]).glob("*.json"))
-assert len(run_files) == 1, run_files
+assert len(run_files) >= 2, run_files
 record = json.loads(run_files[0].read_text())
 assert record["candidate_sessions"] == 1, record
 assert record["processed_sessions"] == 1, record

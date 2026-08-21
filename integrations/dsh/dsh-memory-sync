@@ -71,6 +71,56 @@ fi
 PYTHON_BIN="${DPSK_PYTHON3:-python3}"
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || { print -u2 -- "dsh-memory-sync: python3 is required"; exit 127; }
 
+# launchd starts agents with a minimal PATH. The pinned DSH launcher is a
+# `#!/usr/bin/env node` script, so make a discovered Node runtime available to
+# the isolated child even when the LaunchAgent was not loaded from a shell
+# that initialized nvm/Homebrew. Explicit PATH entries still win; this is only
+# a fail-closed compatibility fallback for the local runtime.
+resolve_node_executable() {
+  setopt local_options null_glob numeric_glob_sort
+  local candidate
+  local version_major
+  local i
+  typeset -a nvm_candidates
+  is_supported_node() {
+    [[ -x "$1" ]] || return 1
+    version_major="$("$1" --version 2>/dev/null | /usr/bin/sed -E 's/^v([0-9]+).*/\1/' || true)"
+    [[ "$version_major" =~ '^[0-9]+$' ]] && (( version_major >= 22 ))
+  }
+  candidate="$(command -v node 2>/dev/null || true)"
+  if [[ -n "$candidate" ]] && is_supported_node "$candidate"; then
+    print -r -- "$candidate"
+    return 0
+  fi
+  # Prefer stable system/Homebrew locations, then the numerically newest nvm
+  # installation (v22 over an older v20, for example).
+  for candidate in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+    if is_supported_node "$candidate"; then
+      print -r -- "$candidate"
+      return 0
+    fi
+  done
+  nvm_candidates=("$HOME"/.nvm/versions/node/*/bin/node(N))
+  for (( i=${#nvm_candidates}; i >= 1; i-- )); do
+    candidate="${nvm_candidates[i]}"
+    if is_supported_node "$candidate"; then
+      print -r -- "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+NODE_EXECUTABLE="$(resolve_node_executable || true)"
+RUNTIME_PATH="${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+if [[ -n "$NODE_EXECUTABLE" ]]; then
+  NODE_DIR="$(dirname -- "$NODE_EXECUTABLE")"
+  case ":$RUNTIME_PATH:" in
+    *":$NODE_DIR:"*) ;;
+    *) RUNTIME_PATH="$NODE_DIR:$RUNTIME_PATH" ;;
+  esac
+fi
+
 # In --json mode every progress line is suppressed from stdout so the single
 # JSON document on stdout stays machine-parseable; diagnostics still go to stderr.
 progress() {
@@ -123,7 +173,7 @@ BASE_ENV=(
   "HOME=${HOME:?HOME is required}"
   "DSH_HOME=$DSH_HOME"
   "DSH_MEMORY_ROOT=$DSH_MEMORY_ROOT"
-  "PATH=${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+  "PATH=$RUNTIME_PATH"
   "TMPDIR=${TMPDIR:-/tmp}"
   "LANG=${LANG:-C}"
 )

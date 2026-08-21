@@ -189,14 +189,14 @@ Clone the repository and install its reproducible development/runtime dependenci
 ```zsh
 git clone https://github.com/seriousz158/dsh-memory.git
 cd dsh-memory
-# Use the pinned runtime that this v0.6.0 integration was tested with.
+# Use the pinned runtime that this v0.7.0 integration was tested with.
 npm install --global @deepseek-ai/dsh@0.1.0-rc.7
 dsh --version
 npm ci --ignore-scripts
 ```
 
 This is a source-and-GitHub-Release project. Both workspace packages are
-intentionally marked private, so `v0.6.0` cannot be published to npm by
+intentionally marked private, so `v0.7.0` cannot be published to npm by
 accident.
 
 Install the two local packages into your DSH profile. The installer defaults to
