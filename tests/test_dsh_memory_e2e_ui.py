@@ -190,12 +190,12 @@ def main() -> int:
 
             # --- status tones + preview confirmation -----------------------
             # Restart against a second isolated fixture containing a failed
-            # last-run journal and one real pending preview. This exercises
+            # last-run journal and two real pending previews. This exercises
             # the source checkout's status rendering and inline confirmation
             # path without a Provider or the user's memory store.
             browser.close()
             stop_service(service)
-            service = start_service({"seedLastRun": "failed", "seedPreview": True})
+            service = start_service({"seedLastRun": "failed", "seedPreview": True, "seedPreviewCount": 2})
             base_url = service["baseUrl"]
             browser = p.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1280, "height": 800})
@@ -211,8 +211,24 @@ def main() -> int:
             preview_head.click()
             assert preview_head.get_attribute("aria-expanded") == "true", "preview row should expand"
             preview_id = "20260821T000001Z-e2e00002"
-            preview_line = preview_row.locator(".dshmu_previewLine")
+            preview_line = preview_row.locator(".dshmu_previewLine").filter(has_text=preview_id)
             assert preview_line.get_by_text(preview_id).count() == 1, "preview id missing"
+
+            # Discarding one of several previews must not leave focus on the
+            # row that is about to be re-rendered; it returns to the stable
+            # recent-sync header instead.
+            discard_id = "20260821T000002Z-e2e00003"
+            discard_line = preview_row.locator(".dshmu_previewLine").filter(has_text=discard_id)
+            discard_button = discard_line.get_by_role("button", name=re.compile("^丢弃预览 "))
+            discard_button.click()
+            wait_for(
+                lambda: discard_line.get_by_text(f"丢弃预览 {discard_id}？").count() == 1,
+                message="discard confirmation prompt",
+            )
+            discard_line.get_by_role("button", name="确认丢弃").click()
+            wait_for(lambda: discard_line.count() == 0, message="discarded preview removal")
+            recent_head = recent_row.get_by_role("button", name=re.compile("最近同步"))
+            assert recent_head.evaluate("(el) => document.activeElement === el"), "discard completion should restore focus"
 
             apply_button = preview_line.get_by_role("button", name=re.compile("^应用预览 "))
             apply_button.click()

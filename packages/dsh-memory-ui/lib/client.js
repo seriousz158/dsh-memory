@@ -389,7 +389,7 @@ window.__ModuleLoader__.load({
                             jsx.jsx("span", { className: "dshmu_previewPaths", title: pathsText, children: pathsText || "无变更" }),
                             jsx.jsxs("span", { className: "dshmu_previewActions", "aria-live": "polite", children: [
                               jsx.jsx(ConfirmButton, { tone: "accent", label: "应用", ariaLabel: `应用预览 ${preview.preview_id}`, busyLabel: "处理中…", confirmText: `应用预览 ${preview.preview_id}？`, confirmLabel: "确认应用", busy: previewBusy, disabled: !available, onConfirm: () => applyPreview(preview.preview_id), onComplete: () => focusRow("sync", "delete") }),
-                              jsx.jsx(ConfirmButton, { tone: "default", label: "丢弃", ariaLabel: `丢弃预览 ${preview.preview_id}`, busyLabel: "处理中…", confirmText: `丢弃预览 ${preview.preview_id}？`, confirmLabel: "确认丢弃", busy: previewBusy, disabled: !available, onConfirm: () => discardPreview(preview.preview_id), onComplete: () => focusRow("previews", "sync", "delete") }),
+                              jsx.jsx(ConfirmButton, { tone: "default", label: "丢弃", ariaLabel: `丢弃预览 ${preview.preview_id}`, busyLabel: "处理中…", confirmText: `丢弃预览 ${preview.preview_id}？`, confirmLabel: "确认丢弃", busy: previewBusy, disabled: !available, onConfirm: () => discardPreview(preview.preview_id), onComplete: () => focusRow("sync", "delete") }),
                             ] }),
                           ] }, preview.preview_id);
                         }),

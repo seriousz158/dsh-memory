@@ -62,16 +62,16 @@ async function seedLastRun(root, status = "failed") {
   await writeFile(join(root, ".sync", "last-run.json"), `${JSON.stringify(record)}\n`, { mode: 0o600 });
 }
 
-async function seedPendingPreview(root) {
-  const previewId = "20260821T000001Z-e2e00002";
+async function seedPendingPreview(root, index = 2) {
+  const previewId = `20260821T00000${index - 1}Z-e2e0000${index}`;
   await execFile("/usr/bin/python3", [SYNC_APPLY, "prepare-preview", "--root", root, "--run-id", previewId]);
   const staging = join(root, ".sync", "previews", previewId, "staging");
-  const recordPath = join(staging, "handbook", "e2e-preview.md");
+  const recordPath = join(staging, "handbook", `e2e-preview-${index}.md`);
   await mkdir(dirname(recordPath), { recursive: true, mode: 0o700 });
   await writeFile(recordPath, [
     "---",
     "schema_version: 1",
-    "id: e2e/preview",
+    `id: e2e/preview-${index}`,
     "type: fact",
     "status: active",
     "created_at: 2026-08-21",
@@ -86,7 +86,7 @@ async function seedPendingPreview(root) {
     created_at: utcString(-60_000),
     expires_at: utcString(60 * 60 * 1000),
     candidate_sessions: 0,
-    changed_paths: ["handbook/e2e-preview.md"],
+    changed_paths: [`handbook/e2e-preview-${index}.md`],
     status: "pending",
   };
   await execFile("/usr/bin/python3", [
@@ -168,7 +168,10 @@ export async function startIsolatedService(options = {}) {
   await execFile("/usr/bin/git", ["-C", memoryRoot, "commit", "-q", "-m", "fixture: empty memory repository"]);
 
   if (options.seedLastRun) await seedLastRun(memoryRoot, options.seedLastRun === true ? "failed" : options.seedLastRun);
-  if (options.seedPreview) await seedPendingPreview(memoryRoot);
+  const previewCount = options.seedPreview === true
+    ? Number(options.seedPreviewCount ?? 1)
+    : Number(options.seedPreview || 0);
+  for (let index = 2; index < 2 + previewCount; index += 1) await seedPendingPreview(memoryRoot, index);
 
 
   // Minimal plugin registration: only the memory plugins, no providers.
