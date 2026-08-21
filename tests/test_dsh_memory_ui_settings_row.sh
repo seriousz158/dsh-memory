@@ -18,15 +18,29 @@ if rg -q -- 'legacyRecords|migrateLegacy|Legacy 记录|待迁移|migrationReques
   exit 1
 fi
 grep -Fq -- 'className: "dshmu_memory"' "$CLIENT"
-grep -Fq -- 'className: "dshmu_panel dshmu_panel--primary"' "$CLIENT"
-grep -Fq -- 'className: "dshmu_card"' "$CLIENT"
-grep -Fq -- 'className: "dshmu_actions"' "$CLIENT"
-grep -Fq -- 'dshmu_button--danger-confirm' "$CLIENT"
-grep -Fq -- 'dshmu_button dshmu_button--secondary' "$CLIENT"
+grep -Fq -- 'className: "dshmu_head dshmu_head--static"' "$CLIENT"
+grep -Fq -- 'className: "dshmu_head"' "$CLIENT"
+grep -Fq -- '"aria-expanded": open' "$CLIENT"
+grep -Fq -- '"aria-controls": `${baseId}-${id}-body`' "$CLIENT"
+grep -Fq -- 'role: "region"' "$CLIENT"
+grep -Fq -- 'hidden: openRow !== id' "$CLIENT"
+grep -Fq -- 'const [openRow, setOpenRow] = react.useState(null)' "$CLIENT"
+grep -Fq -- 'function ConfirmButton' "$CLIENT"
+grep -Fq -- 'confirmRef.current?.focus()' "$CLIENT"
+grep -Fq -- 'requestAnimationFrame(() => triggerRef.current?.focus())' "$CLIENT"
+grep -Fq -- 'event.key === "Escape"' "$CLIENT"
+grep -Fq -- 'aria-live' "$CLIENT"
 grep -Fq -- 'previewList === null || previewList.length > 0' "$CLIENT"
-grep -Fq -- 'stage === 2 && phrase !== "删除记忆"' "$CLIENT"
-grep -Fq -- 'className: "dshmu_title", children: "记忆管理"' "$CLIENT"
-grep -Fq -- '~/.dsh/storages/memory' "$CLIENT"
+grep -Fq -- 'phrase !== "删除记忆"' "$CLIENT"
+grep -Fq -- '本地 Git 记忆库' "$CLIENT"
+grep -Fq -- 'const RUN_STATUS = {' "$CLIENT"
+for run_status in applied no_change failed interrupted rolled_back running pending; do
+  grep -Fq -- "${run_status}:" "$CLIENT"
+done
+if rg -q -- 'dshmu_(panel|card|grid|actions)|window\.confirm|~/.dsh/storages/memory' "$CLIENT"; then
+  print -u2 -- 'dsh-memory-ui must use the accordion rows and inline confirmations.'
+  exit 1
+fi
 if rg -q -- '~?/?\.zcode/memory|DSH_MEMORY_ROOT|memoryRoot|rootPath' "$CLIENT"; then
   print -u2 -- 'dsh-memory-ui must not expose a legacy or browser-selected memory path.'
   exit 1

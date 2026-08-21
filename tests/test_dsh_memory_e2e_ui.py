@@ -6,7 +6,8 @@ helpers/dsh-e2e-service.mjs), drives headless Chromium through the Python
 Playwright installation that ships with the machine's browser-acceptance
 tooling, and asserts the rendered panel across desktop/light, dark, and
 narrow viewports, plus the empty-state hiding of the preview section on a
-fresh memory store and the absence of the removed Legacy migration UI.
+fresh memory store, keyboard/focus behavior, inline confirmations, status
+tones, and the absence of the removed Legacy migration UI.
 
 The live memory store, real DSH_HOME, and provider credentials are never
 touched. Exits non-zero on any assertion failure; skipped (exit 0) when
@@ -102,7 +103,7 @@ def open_memory_panel(page, base_url):
     return panel
 
 
-def stop_service(service: dict) -> None:
+def stop_service(service: dict | None) -> None:
     """Stop the detached DSH service by PID and remove its temp home."""
     pid = service.get("pid")
     if pid:
@@ -115,6 +116,19 @@ def stop_service(service: dict) -> None:
         shutil.rmtree(home, ignore_errors=True)
 
 
+def start_service(options=None) -> dict:
+    """Start the source-checkout DSH fixture with optional seeded state."""
+    options_json = json.dumps(options or {}, ensure_ascii=False)
+    return run_node(
+        f'''
+        const {{ startIsolatedService }} = await import("./tests/helpers/dsh-e2e-service.mjs");
+        const s = await startIsolatedService({options_json});
+        console.log(JSON.stringify({{ baseUrl: s.baseUrl, port: s.port, pid: s.child.pid, home: s.home }}));
+        process.exit(0);
+        ''',
+    )
+
+
 def main() -> int:
     try:
         from playwright.sync_api import sync_playwright
@@ -124,14 +138,7 @@ def main() -> int:
 
     service = None
     try:
-        service = run_node(
-            """
-            const { startIsolatedService } = await import("./tests/helpers/dsh-e2e-service.mjs");
-            const s = await startIsolatedService();
-            console.log(JSON.stringify({ baseUrl: s.baseUrl, port: s.port, pid: s.child.pid, home: s.home }));
-            process.exit(0);
-            """,
-        )
+        service = start_service()
         base_url = service["baseUrl"]
         print(f"dsh-memory e2e: isolated service at {base_url}")
 
@@ -144,7 +151,7 @@ def main() -> int:
             txt = panel.text_content() or ""
 
             assert "长期记忆" in txt, "memory section title missing"
-            assert "记忆管理" in txt, "memory management card missing"
+            assert "记忆库" in txt, "memory repository row missing"
             assert "最近同步" in txt, "recent sync card missing"
             # The Legacy migration UI is intentionally removed; preview remains
             # hidden when the fresh store has no pending previews.
@@ -153,6 +160,21 @@ def main() -> int:
             # The repository reports healthy (fixture repo), not unavailable.
             match = re.search(r"记忆库[^\n]*", txt)
             assert match and "不可用" not in match.group(0), f"memory repository unhealthy: {match.group(0) if match else 'N/A'}"
+
+            # The accordion is keyboard-first. Delete is always present even
+            # in a fresh store; Enter opens it, Escape closes it, and focus
+            # returns to the row header instead of falling out of the modal.
+            delete_head = panel.get_by_role("button", name="删除记忆")
+            delete_head.focus()
+            page.keyboard.press("Enter")
+            assert delete_head.get_attribute("aria-expanded") == "true", "Enter should expand delete row"
+            delete_body_id = delete_head.get_attribute("aria-controls")
+            assert delete_body_id, "accordion header must reference its body"
+            delete_body = panel.locator(f"#{delete_body_id}")
+            assert delete_body.get_attribute("hidden") is None, "expanded body must be visible"
+            page.keyboard.press("Escape")
+            assert delete_head.get_attribute("aria-expanded") == "false", "Escape should collapse delete row"
+            assert delete_head.evaluate("(el) => document.activeElement === el"), "focus should return to row header"
 
             # Enable switch reflects the seeded default (on) and toggles off/on.
             toggle = page.locator("button[role='switch'][aria-label='长期记忆']").first
@@ -164,6 +186,73 @@ def main() -> int:
             page.wait_for_timeout(600)
             assert toggle.get_attribute("aria-checked") == "true", "toggle should turn memory back on"
             print("dsh-memory e2e: desktop/light + empty states + toggle OK")
+            page.close()
+
+            # --- status tones + preview confirmation -----------------------
+            # Restart against a second isolated fixture containing a failed
+            # last-run journal and one real pending preview. This exercises
+            # the source checkout's status rendering and inline confirmation
+            # path without a Provider or the user's memory store.
+            browser.close()
+            stop_service(service)
+            service = start_service({"seedLastRun": "failed", "seedPreview": True})
+            base_url = service["baseUrl"]
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1280, "height": 800})
+            panel = open_memory_panel(page, base_url)
+
+            recent_row = panel.locator("section[aria-label='最近同步']")
+            assert recent_row.locator(".dshmu_dot--danger").count() == 1, "failed status must use danger tone"
+            assert recent_row.get_by_text("同步失败").count() >= 1, "failed status label missing"
+            assert recent_row.get_by_role("button", name="回滚本次同步").count() == 0, "failed runs must not offer rollback"
+
+            preview_row = panel.locator("section[aria-label='待应用预览']")
+            preview_head = preview_row.get_by_role("button", name=re.compile("待应用预览"))
+            preview_head.click()
+            assert preview_head.get_attribute("aria-expanded") == "true", "preview row should expand"
+            preview_id = "20260821T000001Z-e2e00002"
+            preview_line = preview_row.locator(".dshmu_previewLine")
+            assert preview_line.get_by_text(preview_id).count() == 1, "preview id missing"
+
+            apply_button = preview_line.get_by_role("button", name="应用")
+            apply_button.click()
+            wait_for(
+                lambda: preview_line.get_by_text(f"应用预览 {preview_id}？").count() == 1,
+                message="apply confirmation prompt",
+            )
+            # Escape only cancels the confirmation cluster and keeps the
+            # accordion row open; it must not close the settings modal.
+            page.keyboard.press("Escape")
+            assert preview_line.get_by_text(f"应用预览 {preview_id}？").count() == 0, "Escape should cancel confirmation"
+            assert preview_head.get_attribute("aria-expanded") == "true", "confirmation Escape must keep row open"
+
+            apply_button.click()
+            confirm_apply = preview_line.get_by_role("button", name="确认应用")
+            wait_for(lambda: confirm_apply.is_visible(), message="apply confirmation button")
+            confirm_apply.click()
+            wait_for(
+                lambda: panel.locator("section[aria-label='待应用预览']").count() == 0,
+                message="pending preview row removal after apply",
+            )
+            wait_for(lambda: "已应用" in (panel.text_content() or ""), message="applied status")
+
+            recent_row = panel.locator("section[aria-label='最近同步']")
+            recent_head = recent_row.get_by_role("button", name=re.compile("最近同步"))
+            recent_head.click()
+            assert recent_row.locator(".dshmu_dot--success").count() == 1, "applied status must use success tone"
+            rollback_button = recent_row.get_by_role("button", name="回滚本次同步")
+            rollback_button.click()
+            confirm_rollback = recent_row.get_by_role("button", name="确认回滚")
+            wait_for(lambda: confirm_rollback.is_visible(), message="rollback confirmation button")
+            confirm_rollback.click()
+            wait_for(lambda: "已回滚本次同步" in (panel.text_content() or ""), message="rollback result")
+            wait_for(
+                lambda: recent_row.locator(".dshmu_dot--warning").count() == 1,
+                message="rolled-back status refresh",
+            )
+            assert recent_row.locator(".dshmu_dot--warning").count() == 1, "rolled-back status must use warning tone"
+            assert recent_row.get_by_role("button", name="回滚本次同步").count() == 0, "rolled-back runs must not offer rollback"
+            print("dsh-memory e2e: accordion keyboard + status tones + confirmations OK")
             page.close()
 
             # --- theme contract ----------------------------------------------

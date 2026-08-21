@@ -19,10 +19,13 @@ import { fileURLToPath } from "node:url";
 
 const execFile = promisify(execFileCallback);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const SYNC_APPLY = join(ROOT, "packages", "dsh-memory", "lib", "sync-apply.py");
 
 // The shared plugin store that contains every @deepseek-ai/* bundle. Defaults
 // to the deepseek-harness project runtime; an explicit DSH_RUNTIME_ROOT
-// (pointing at a .dsh home with profiles/node_modules) overrides it.
+// (pointing at a .dsh home with profiles/node_modules) overrides it. The two
+// local dsh-memory packages are linked from this checkout below so E2E never
+// silently exercises an installed profile copy.
 const RUNTIME_ROOT = resolve(
   process.env.DSH_RUNTIME_ROOT
     || join(process.env.HOME || "", "projects", "deepseek-harness", ".dsh"),
@@ -33,16 +36,82 @@ const SHARED_MODULES = join(RUNTIME_ROOT, "profiles", "node_modules");
 
 let service = null;
 
+function utcString(offsetMs = 0) {
+  return new Date(Date.now() + offsetMs).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+async function seedLastRun(root, status = "failed") {
+  const runId = "20260821T000000Z-e2e00001";
+  const startedAt = utcString(-60_000);
+  const finishedAt = utcString();
+  const record = {
+    schema_version: 1,
+    run_id: runId,
+    operation: "sync",
+    status,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    changed_paths: status === "failed" ? ["handbook/fixture.md"] : [],
+    recovery_commit: null,
+    apply_commit: null,
+    error_code: status === "failed" ? "provider-unavailable" : null,
+  };
+  await mkdir(join(root, ".sync", "runs"), { recursive: true, mode: 0o700 });
+  await writeFile(join(root, ".sync", "runs", `${runId}.json`), `${JSON.stringify(record)}\n`, { mode: 0o600 });
+  await writeFile(join(root, ".sync", "last-run.json"), `${JSON.stringify(record)}\n`, { mode: 0o600 });
+}
+
+async function seedPendingPreview(root) {
+  const previewId = "20260821T000001Z-e2e00002";
+  await execFile("/usr/bin/python3", [SYNC_APPLY, "prepare-preview", "--root", root, "--run-id", previewId]);
+  const staging = join(root, ".sync", "previews", previewId, "staging");
+  const recordPath = join(staging, "handbook", "e2e-preview.md");
+  await mkdir(dirname(recordPath), { recursive: true, mode: 0o700 });
+  await writeFile(recordPath, [
+    "---",
+    "schema_version: 1",
+    "id: e2e/preview",
+    "type: fact",
+    "status: active",
+    "created_at: 2026-08-21",
+    "updated_at: 2026-08-21",
+    "---",
+    "",
+    "Isolated preview fixture.",
+    "",
+  ].join("\n"), { mode: 0o600 });
+  const metadata = {
+    preview_id: previewId,
+    created_at: utcString(-60_000),
+    expires_at: utcString(60 * 60 * 1000),
+    candidate_sessions: 0,
+    changed_paths: ["handbook/e2e-preview.md"],
+    status: "pending",
+  };
+  await execFile("/usr/bin/python3", [
+    SYNC_APPLY,
+    "write-preview",
+    "--root", root,
+    "--run-id", previewId,
+    "--preview-json", JSON.stringify(metadata),
+  ]);
+  return previewId;
+}
+
 export async function startIsolatedService(options = {}) {
   if (service) return service;
   const home = await mkdtemp(join(tmpdir(), "dsh-memory-e2e-"));
   const profiles = join(home, "profiles");
   await mkdir(profiles, { recursive: true });
 
-  // Reuse the shared plugin store and the pinned per-plugin profiles.
+  // Reuse the shared plugin store and the pinned per-plugin profiles. The
+  // memory packages themselves must come from this checkout; otherwise a
+  // stale ~/.dsh profile can make source regressions invisible to CI.
   await symlink(SHARED_MODULES, join(profiles, "node_modules"), "dir");
   for (const name of ["web", "headless", "dsh-memory", "dsh-memory-ui"]) {
-    const source = join(RUNTIME_ROOT, "profiles", name);
+    const source = name === "dsh-memory" || name === "dsh-memory-ui"
+      ? join(ROOT, "packages", name)
+      : join(RUNTIME_ROOT, "profiles", name);
     await symlink(source, join(profiles, name), "dir");
   }
 
@@ -71,6 +140,9 @@ export async function startIsolatedService(options = {}) {
   await execFile("/usr/bin/git", ["-C", memoryRoot, "init", "-q"]);
   await execFile("/usr/bin/git", ["-C", memoryRoot, "add", "-A"]);
   await execFile("/usr/bin/git", ["-C", memoryRoot, "commit", "-q", "-m", "fixture: empty memory repository"]);
+
+  if (options.seedLastRun) await seedLastRun(memoryRoot, options.seedLastRun === true ? "failed" : options.seedLastRun);
+  if (options.seedPreview) await seedPendingPreview(memoryRoot);
 
 
   // Minimal plugin registration: only the memory plugins, no providers.
@@ -125,7 +197,7 @@ export async function startIsolatedService(options = {}) {
 
   // Health: the root document must answer 200 before any page load.
   await waitForHttp(service.baseUrl + "/", 30_000);
-  return service;
+  return { ...service, memoryRoot };
 }
 
 export function stopIsolatedService() {
