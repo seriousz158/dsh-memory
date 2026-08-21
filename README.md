@@ -174,9 +174,10 @@ behavior is verified, not just snapshot-checked:
   credentials are never touched.
 - Headless Chromium drives the real settings popover and asserts the
   desktop/light layout, absence of the removed Legacy migration UI, empty
-  preview state, the enable switch, the theme token contract (`var(--dsw-*)`
-  in the injected stylesheet), and the 480px narrow layout with no horizontal
-  overflow.
+  preview state, the enable switch, keyboard-safe accordion focus and inline
+  confirmations, status tones for failed/applied/rolled-back runs, the theme
+  token contract (`var(--dsw-*)` in the injected stylesheet), and the 480px
+  narrow layout with no horizontal overflow.
 - The suite runs as part of `npm test` and skips cleanly when the Python
   Playwright browser-acceptance tooling is unavailable (e.g. CI images).
 
