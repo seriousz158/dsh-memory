@@ -146,10 +146,15 @@ CLI and host API use the same safe transaction path:
   `dsh-memory-migrate --dry-run|--apply` or the host API when migration is
   explicitly needed; the UI never exposes the filesystem root or runs Git.
 
-## v0.8: usage feedback and cited memory context
+## v0.8: usage feedback, cited context, and read tools
 
-v0.8 adds a host-owned, read-only context path for future model tools without
-adding settings UI:
+v0.8 adds a bounded startup snapshot and host-owned read tools without adding
+settings UI:
+
+- When memory is enabled, the current `summary.md` is injected into the
+  system prompt as a bounded, explicitly untrusted `<summary_snapshot>` data
+  block (16 KiB maximum). An unreadable snapshot falls back to the static
+  memory instructions.
 
 - `memory.context({ query, limit })` returns bounded memory bodies with stable
   source citations (`[source: ... · id: ...]`), while preserving the existing
@@ -160,9 +165,10 @@ adding settings UI:
   entry without changing tracked memory files.
 - Query matches are selected deterministically, then ordered by usage count,
   recent use, and path. Expired records are never returned.
-
-The context API is deliberately host-only in this release. A later read-only
-tool can expose it to the model without granting filesystem or Git access.
+- The model can call `memory_search` (ranked snippets) and `memory_context`
+  (bounded records ordered by usage) as read tools. They return JSON with
+  relative-path citations; the host owns all filesystem access and the model
+  never receives Git or sidecar paths.
 
 ## v0.7: browser end-to-end tests
 
