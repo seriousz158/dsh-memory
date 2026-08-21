@@ -325,7 +325,7 @@ chmod 600 "$HEADLESS_SESSION_PATCH"
 # memory root, never runs Git, and never advances the watermark.
 STAGING_PROMPT="你是 dsh-memory 的定时记忆整合代理，现在执行一次增量同步。重要：本会话自身绝不提取、绝不整合，避免自我循环。
 
-你在一个隔离的暂存记忆仓库中工作（$STAGING，git 版本化；宪法、提取/整合模板、硬规则见其 README.md，先读它）。你只能修改 $STAGING 下的 summary.md、handbook/、rollouts/、archive/；禁止修改 $STAGING/README.md，禁止创建其他文件或目录，禁止执行任何 git 命令。
+你在一个隔离的暂存记忆仓库中工作（$STAGING，git 版本化；宪法、「提炼与整合」一节的要求、硬规则见其 README.md，先读它）。你只能修改 $STAGING 下的 summary.md、handbook/、rollouts/、archive/；禁止修改 $STAGING/README.md，禁止创建其他文件或目录，禁止执行任何 git 命令。
 
 会话日志根：$DSH_HOME/sessions。同步标记：$MARKER（unix 秒时间戳文件）。
 
