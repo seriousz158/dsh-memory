@@ -79,25 +79,35 @@ command -v "$PYTHON_BIN" >/dev/null 2>&1 || { print -u2 -- "dsh-memory-sync: pyt
 resolve_node_executable() {
   setopt local_options null_glob numeric_glob_sort
   local candidate
+  local version_major
+  local i
   typeset -a nvm_candidates
+  is_supported_node() {
+    [[ -x "$1" ]] || return 1
+    version_major="$($1 --version 2>/dev/null | /usr/bin/sed -E 's/^v([0-9]+).*/\1/' || true)"
+    [[ "$version_major" =~ '^[0-9]+$' ]] && (( version_major >= 22 ))
+  }
   candidate="$(command -v node 2>/dev/null || true)"
-  if [[ -n "$candidate" && -x "$candidate" ]]; then
+  if [[ -n "$candidate" ]] && is_supported_node "$candidate"; then
     print -r -- "$candidate"
     return 0
   fi
   # Prefer stable system/Homebrew locations, then the numerically newest nvm
   # installation (v22 over an older v20, for example).
   for candidate in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
-    if [[ -x "$candidate" ]]; then
+    if is_supported_node "$candidate"; then
       print -r -- "$candidate"
       return 0
     fi
   done
   nvm_candidates=("$HOME"/.nvm/versions/node/*/bin/node(N))
-  if (( ${#nvm_candidates} > 0 )); then
-    print -r -- "${nvm_candidates[-1]}"
-    return 0
-  fi
+  for (( i=${#nvm_candidates}; i >= 1; i-- )); do
+    candidate="${nvm_candidates[i]}"
+    if is_supported_node "$candidate"; then
+      print -r -- "$candidate"
+      return 0
+    fi
+  done
   return 1
 }
 
