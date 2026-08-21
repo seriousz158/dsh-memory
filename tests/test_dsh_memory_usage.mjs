@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import {
   USAGE_FILE,
   formatCitation,
@@ -10,6 +13,7 @@ import {
   sortByUsage,
 } from "../packages/dsh-memory/lib/memory-usage.js";
 
+const execFile = promisify(execFileCallback);
 const root = await mkdtemp(join(tmpdir(), "dsh-memory-usage-"));
 await mkdir(join(root, ".sync"), { mode: 0o700 });
 await writeFile(join(root, ".sync", ".gitignore"), "usage.json\n", { mode: 0o600 });
@@ -57,6 +61,11 @@ await Promise.all(Array.from({ length: 8 }, (_, index) => recordUsage(
   new Date(`2026-08-21T03:00:0${index}.000Z`),
 )));
 assert.equal((await readUsage(root)).records["archive/unused.md"].usage_count, 9);
+
+const usageModule = pathToFileURL(join(process.cwd(), "packages/dsh-memory/lib/memory-usage.js")).href;
+const childProgram = `import { recordUsage } from ${JSON.stringify(usageModule)}; await recordUsage(${JSON.stringify(root)}, ["handbook/alpha.md"]);`;
+await Promise.all(Array.from({ length: 4 }, () => execFile(process.execPath, ["--input-type=module", "--eval", childProgram], { encoding: "utf8" })));
+assert.equal((await readUsage(root)).records["handbook/alpha.md"].usage_count, 6);
 
 await writeFile(usagePath, JSON.stringify({ schema_version: 1, records: { "../escape.md": { usage_count: 1, last_usage: null } } }));
 await assert.rejects(() => readUsage(root), (error) => error?.memoryCode === "usage-invalid");
