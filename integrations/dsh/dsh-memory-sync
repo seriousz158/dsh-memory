@@ -8,6 +8,9 @@
 # an active-run record lets an interrupted run be recovered on the next sync.
 # A --dry-run flag reports the candidate diff without touching the live root,
 # the journal, the lock, or Git.
+# Zero-change runs journal a no_change record and advance the watermark so
+# the same candidate window is never rescanned; dry-run and preview runs
+# remain side-effect free (no journal record, no watermark move).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
@@ -328,8 +331,8 @@ STAGING_PROMPT="你是 dsh-memory 的定时记忆整合代理，现在执行一�
 
 步骤：
 1. 若 $MARKER 不存在：只输出 NO_SIGNAL 并结束（首次运行不回溯历史会话）。
-2. 用 find \"$DSH_HOME/sessions\" -name 'session.jsonl.zstd' -newer \"$MARKER\" ! -newermt '-1 hour' 找出新增且已静默至少 1 小时的日志；逐个执行 python3 \"$DSH_MEMORY_ROOT/scripts/filter_session.py\" '<日志路径>' > \"${TMPDIR:-/tmp}/dsh-memory-transcript.md\"，读转录并按 README 的「提取模板」提炼（无高信号则输出 NO_SIGNAL 并跳过该会话）。
-3. 全部提炼完成后，严格按 README 的「整合模板」执行 diff 式整合：与旧条目矛盾的内容覆盖旧条目（绝不叠加）、过时内容降级到 $STAGING/archive/、用户稳定偏好同步进 $STAGING/summary.md。
+2. 用 find \"$DSH_HOME/sessions\" -name 'session.jsonl.zstd' -newer \"$MARKER\" ! -newermt '-1 hour' 找出新增且已静默至少 1 小时的日志；逐个执行 python3 \"$DSH_MEMORY_ROOT/scripts/filter_session.py\" '<日志路径>' > \"${TMPDIR:-/tmp}/dsh-memory-transcript.md\"，读转录并按 README「提炼与整合」一节的提炼要求提炼（无高信号则输出 NO_SIGNAL 并跳过该会话）。
+3. 全部提炼完成后，严格按 README「提炼与整合」一节的整合要求执行 diff 式整合：与旧条目矛盾的内容覆盖旧条目（绝不叠加）、过时内容降级到 $STAGING/archive/、用户稳定偏好同步进 $STAGING/summary.md。
 4. 不要执行 git、不要更新 $MARKER；宿主会负责提交和记录。
 
 收尾用一句话汇报：处理了几个会话、合并了几条记忆。"
@@ -393,6 +396,28 @@ if [[ -z "$changed_paths" ]]; then
     if [[ "$DRY_RUN" == "1" ]]; then
       echo "dsh-memory-sync: dry-run: no changes would be applied."
     fi
+  fi
+  # Zero-change runs still advance the watermark and journal a no_change
+  # record: every candidate was delivered to the model, so rescanning the
+  # same window forever would only repeat paid model calls. The run did not
+  # touch the live payload, so finalize commits only .sync + .last-sync.
+  # Preview runs are excluded: preview mode is an operator-review tool and
+  # stays non-journaling (see the preview contract comment near the end).
+  if [[ "$DRY_RUN" == "0" && "$PREVIEW_MODE" == "0" ]]; then
+    DURATION_MS=$(( ( $(date +%s) - START_TS ) * 1000 ))
+    sync_apply finalize \
+      --root "$DSH_MEMORY_ROOT" \
+      --run-id "$RUN_ID" \
+      --operation-name sync \
+      --status no_change \
+      --started-at "$STARTED_AT" \
+      --candidate-sessions "$CANDIDATE_SESSIONS" \
+      --processed-sessions "$PROCESSED_SESSIONS" \
+      --skipped-sessions "$SKIPPED_SESSIONS" \
+      --changed-paths "" \
+      --phase complete \
+      --duration-ms "$DURATION_MS" \
+      --last-sync "$START_TS" >/dev/null
   fi
   rm -rf -- "$STAGING_PARENT"
   exit 0

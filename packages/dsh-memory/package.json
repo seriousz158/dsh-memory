@@ -24,6 +24,7 @@
     "node": ">=22"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6",
     "@deepseek-ai/schemastery": "^3.18.1"

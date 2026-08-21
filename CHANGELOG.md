@@ -23,6 +23,17 @@ All notable changes to this project are documented here.
 - Added keyboard/focus-safe inline confirmations, semantic status tones, and
   empty-preview hiding. Browser E2E now links the source workspaces directly
   instead of exercising an installed profile copy.
+- The enabled memory prompt now includes a bounded, explicitly untrusted
+  `summary.md` snapshot, with a static-instructions fallback when the file is
+  unavailable.
+
+### Added
+
+- Registered host-owned read tools `memory_search` and `memory_context`; both
+  return JSON with relative-path citations, and `memory_context` records only
+  metadata-only usage feedback.
+- Zero-change sync runs now write a `no_change` journal and advance the
+  watermark, while dry-run and preview modes remain side-effect free.
 
 ## [0.8.0] - 2026-08-21
 

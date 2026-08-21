@@ -13,6 +13,9 @@ memory.enabled: boolean
 Default: `true`.
 
 When the setting is changed, the host updates its memory system-prompt section immediately; the next model call observes the new state without restarting DSH.
+When enabled, that section also contains a bounded (16 KiB) `summary.md`
+snapshot marked as `[DPSK MEMORY: UNTRUSTED CONTEXT]`; unreadable summaries
+fall back to the static instructions.
 
 ## Methods
 
@@ -467,6 +470,18 @@ permissions and is excluded from Git. It contains no memory body, transcript,
 prompt, or credential. `truncated` is true when the body reached the 4 KiB
 limit. Failures use `context-invalid-request`,
 `usage-invalid`, `unsafe-layout`, `repo-unavailable`, or `context-failed`.
+
+### Agent tools (v0.8.x)
+
+The host registers two read-path tools when the `tools` service is available:
+
+- `memory_search({ query, limit })` returns the same ranked snippets and
+  citations as `memory.search()`.
+- `memory_context({ query?, limit? })` returns bounded records and updates
+  only the metadata-only usage sidecar used for deterministic ordering.
+
+Both tools return a JSON string to the model. They do not expose the memory
+root, Git operations, journal contents, transcripts, prompts, or credentials.
 
 ### Front matter schema (v0.4)
 

@@ -7,13 +7,21 @@ PACKAGE="$PROJECT_DIR/packages/dsh-memory/package.json"
 
 grep -Fq -- 'export const DEFAULT_DSH_HOME = resolve(process.env.DSH_HOME || join(homedir(), ".dsh"));' "$HOST"
 grep -Fq -- 'process.env.DSH_MEMORY_ROOT || join(DEFAULT_DSH_HOME, "storages", "memory")' "$HOST"
-grep -Fq -- 'export const inject = ["settings"]' "$HOST"
+grep -Fq -- 'export const inject = ["settings", "tools"]' "$HOST"
 grep -Fq -- 'const scope = ctx.settings.register(NS, Config' "$HOST"
 grep -Fq -- 'ctx.inject(["systemPrompt"]' "$HOST"
 grep -Fq -- 'new MemoryService(ctx, { settings })' "$HOST"
 grep -Fq -- 'Remote("status")' "$HOST"
 grep -Fq -- 'Remote("clear")' "$HOST"
 grep -Fq -- 'Remote("context")' "$HOST"
+grep -Fq -- 'SUMMARY_INJECT_MAX_BYTES' "$HOST"
+grep -Fq -- 'buildMemorySectionText' "$HOST"
+grep -Fq -- 'summary_snapshot' "$HOST"
+grep -Fq -- 'UNTRUSTED CONTEXT' "$HOST"
+grep -Fq -- 'defineTool' "$HOST"
+grep -Fq -- 'ctx.tools.register' "$HOST"
+grep -Fq -- 'memory_search' "$HOST"
+grep -Fq -- 'memory_context' "$HOST"
 grep -Fq -- 'safe-clear.py' "$HOST"
 grep -Fq -- 'safeClear(root, "stage")' "$HOST"
 grep -Fq -- 'alternateIndex' "$HOST"
@@ -30,8 +38,8 @@ fi
 
 node -e '
 const p=require(process.argv[1]);
-const peers=["@deepseek-ai/dsh-settings","@deepseek-ai/dsh-typert-protocol","@deepseek-ai/schemastery"];
-if (p.private !== true || p.version !== "0.8.0" || p.exports?.["."] !== "./lib/index.js" || p.type !== "module" || peers.some((name) => !p.peerDependencies?.[name])) process.exit(1);
+const peers=["@deepseek-ai/dsh-settings","@deepseek-ai/dsh-typert-protocol","@deepseek-ai/dsh-tools","@deepseek-ai/schemastery"];
+if (p.private !== true || typeof p.version !== "string" || p.version.length === 0 || p.exports?.["."] !== "./lib/index.js" || p.type !== "module" || peers.some((name) => !p.peerDependencies?.[name])) process.exit(1);
 ' "$PACKAGE"
 node --check "$HOST"
 python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$PROJECT_DIR/packages/dsh-memory/lib/safe-clear.py"

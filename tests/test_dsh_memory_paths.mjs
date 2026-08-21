@@ -41,6 +41,7 @@ await writeFile(join(fixture, "dsh-memory", "package.json"), '{"type":"module"}\
 
 const stubs = {
   "@deepseek-ai/schemastery": "export default { boolean: () => ({ default: () => ({}) }), object: () => ({}) };\n",
+  "@deepseek-ai/dsh-tools": "export const defineTool = (options) => options;\n",
   "@deepseek-ai/dsh-typert-protocol": "export const Remote = () => () => {}; export class TypertRemoteService { constructor() {} }\n",
   "@deepseek-ai/dsh-settings": "export const settingsNamespace = (name) => name;\n",
 };
