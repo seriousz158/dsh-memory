@@ -22,6 +22,9 @@ v0.2 makes every automatic write transactional:
 
 - The synchronizer copies the payload tree into an isolated staging worktree;
   headless DSH only ever sees and writes that staging copy.
+- The one-shot headless session created for consolidation is persisted under a
+  private per-run temporary root, not the user's normal DSH session store, so
+  automatic syncs do not create conversations that require manual archiving.
 - The host verifies the staged diff (paths, read-only reference, live-root
   concurrency) and applies it to the live memory repository with its own
   `recovery` + `apply` commit pair. The model never runs Git.

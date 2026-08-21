@@ -12,6 +12,8 @@ All notable changes to this project are documented here.
 - Workspace and package lock metadata now consistently records v0.7.0.
 - Removed the Legacy migration card and controls from the settings UI; the
   host API and `dsh-memory-migrate` CLI remain available.
+- Automatic headless consolidation sessions now use a private per-run
+  persistence root, so they do not appear in the normal DSH conversation list.
 
 ### Changed
 
