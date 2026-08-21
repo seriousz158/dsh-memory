@@ -1,0 +1,64 @@
+import assert from "node:assert/strict";
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  USAGE_FILE,
+  formatCitation,
+  readUsage,
+  recordUsage,
+  sortByUsage,
+} from "../packages/dsh-memory/lib/memory-usage.js";
+
+const root = await mkdtemp(join(tmpdir(), "dsh-memory-usage-"));
+await mkdir(join(root, ".sync"), { mode: 0o700 });
+await writeFile(join(root, ".sync", ".gitignore"), "usage.json\n", { mode: 0o600 });
+
+const first = new Date("2026-08-21T01:00:00.000Z");
+await recordUsage(root, ["handbook/alpha.md", "rollouts/beta.md"], first);
+await recordUsage(root, ["handbook/alpha.md"], new Date("2026-08-21T02:00:00.000Z"));
+
+const usage = await readUsage(root);
+assert.equal(usage.schema_version, 1);
+assert.deepEqual(usage.records["handbook/alpha.md"], {
+  usage_count: 2,
+  last_usage: "2026-08-21T02:00:00.000Z",
+});
+assert.deepEqual(usage.records["rollouts/beta.md"], {
+  usage_count: 1,
+  last_usage: "2026-08-21T01:00:00.000Z",
+});
+
+const usagePath = join(root, USAGE_FILE);
+assert.equal((await stat(usagePath)).mode & 0o777, 0o600);
+assert.doesNotMatch(await readFile(usagePath, "utf8"), /正文|transcript|prompt|credential/);
+
+const sorted = sortByUsage([
+  { path: "rollouts/beta.md" },
+  { path: "handbook/alpha.md" },
+  { path: "archive/unused.md" },
+], usage);
+assert.deepEqual(sorted.map((entry) => entry.path), [
+  "handbook/alpha.md",
+  "rollouts/beta.md",
+  "archive/unused.md",
+]);
+
+assert.equal(formatCitation("handbook/alpha.md", "project/alpha"), "[source: handbook/alpha.md · id: project/alpha]");
+assert.equal(formatCitation("rollouts/beta.md", null), "[source: rollouts/beta.md]");
+
+await chmod(usagePath, 0o644);
+await recordUsage(root, ["archive/unused.md"], new Date("2026-08-21T03:00:00.000Z"));
+assert.equal((await stat(usagePath)).mode & 0o777, 0o600);
+
+await Promise.all(Array.from({ length: 8 }, (_, index) => recordUsage(
+  root,
+  ["archive/unused.md"],
+  new Date(`2026-08-21T03:00:0${index}.000Z`),
+)));
+assert.equal((await readUsage(root)).records["archive/unused.md"].usage_count, 9);
+
+await writeFile(usagePath, JSON.stringify({ schema_version: 1, records: { "../escape.md": { usage_count: 1, last_usage: null } } }));
+await assert.rejects(() => readUsage(root), (error) => error?.memoryCode === "usage-invalid");
+
+console.log("dsh-memory usage tests passed");

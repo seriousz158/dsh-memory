@@ -54,6 +54,7 @@ const allowed = new Set([
   "packages/dsh-memory/lib/index.js",
   "packages/dsh-memory/lib/legacy-migration.js",
   "packages/dsh-memory/lib/memory-metadata.js",
+  "packages/dsh-memory/lib/memory-usage.js",
   "packages/dsh-memory/lib/memory-tree.js",
   "packages/dsh-memory/lib/operation-lock.js",
   "packages/dsh-memory/lib/safe-clear.py",
@@ -72,6 +73,8 @@ const allowed = new Set([
   "tests/test_dsh_memory_init.sh",
   "tests/test_dsh_memory_install.sh",
   "tests/test_dsh_memory_metadata.mjs",
+  "tests/test_dsh_memory_usage.mjs",
+  "tests/test_dsh_memory_context.mjs",
   "tests/test_dsh_memory_operation_lock.mjs",
   "tests/test_dsh_memory_backup.sh",
   "tests/test_dsh_memory_migrate.sh",
@@ -225,7 +228,7 @@ try {
       if (content === null) continue;
       try {
         const manifest = JSON.parse(content);
-        if (manifest.version !== "0.7.0") add("manifest version is not 0.7.0", manifestPath);
+        if (manifest.version !== "0.8.0") add("manifest version is not 0.8.0", manifestPath);
         if (manifestPath !== "package.json" && manifest.private !== true) {
           add("package is not locked against npm publication", manifestPath);
         }

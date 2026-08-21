@@ -13,6 +13,7 @@ grep -Fq -- 'ctx.inject(["systemPrompt"]' "$HOST"
 grep -Fq -- 'new MemoryService(ctx, { settings })' "$HOST"
 grep -Fq -- 'Remote("status")' "$HOST"
 grep -Fq -- 'Remote("clear")' "$HOST"
+grep -Fq -- 'Remote("context")' "$HOST"
 grep -Fq -- 'safe-clear.py' "$HOST"
 grep -Fq -- 'safeClear(root, "stage")' "$HOST"
 grep -Fq -- 'alternateIndex' "$HOST"
@@ -30,7 +31,7 @@ fi
 node -e '
 const p=require(process.argv[1]);
 const peers=["@deepseek-ai/dsh-settings","@deepseek-ai/dsh-typert-protocol","@deepseek-ai/schemastery"];
-if (p.private !== true || p.version !== "0.7.0" || p.exports?.["."] !== "./lib/index.js" || p.type !== "module" || peers.some((name) => !p.peerDependencies?.[name])) process.exit(1);
+if (p.private !== true || p.version !== "0.8.0" || p.exports?.["."] !== "./lib/index.js" || p.type !== "module" || peers.some((name) => !p.peerDependencies?.[name])) process.exit(1);
 ' "$PACKAGE"
 node --check "$HOST"
 python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$PROJECT_DIR/packages/dsh-memory/lib/safe-clear.py"

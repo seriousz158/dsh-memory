@@ -20,6 +20,7 @@ import {
 } from "./operation-lock.js";
 import { parseFrontMatter, isExpired, topicKey } from "./memory-metadata.js";
 import { legacyRecordSummary, migratedContent, scanLegacyRecords } from "./legacy-migration.js";
+import { formatCitation, readUsage, recordUsage, sortByUsage, usageMetadata } from "./memory-usage.js";
 import { SyncTransaction } from "./sync-transaction.js";
 
 const execFile = promisify(execFileCallback);
@@ -68,6 +69,13 @@ async function mkdirSafe(path) {
 }
 function hasFrontMatter(content) {
   return content.startsWith("---\n") || content.startsWith("---\r\n");
+}
+function bodyWithoutFrontMatter(content) {
+  return content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+}
+function boundedContextBody(content, maxBytes = 4096) {
+  const bytes = Buffer.from(content, "utf8");
+  return bytes.length <= maxBytes ? content : bytes.subarray(0, maxBytes).toString("utf8");
 }
 
 /** Recursively list files under a payload directory as root-relative paths. */
@@ -679,10 +687,54 @@ export class MemoryRepository {
     }
   }
 
+  async collectSearchResults(root, query) {
+    const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
+    if (tokens.length === 0) throw memoryError("search-invalid-request");
+    const results = [];
+    const files = await this.payloadFiles(root);
+    for (const file of files) {
+      if (file === "summary.md" || !/\.md$/.test(file)) continue;
+      const content = await readFileSafe(join(root, file), "utf8").catch(() => "");
+      let metadata = null;
+      try { metadata = parseFrontMatter(content, file); } catch { continue; }
+      if (metadata !== null && isExpired(metadata)) continue;
+      const body = bodyWithoutFrontMatter(content);
+      const searchable = [
+        metadata?.id ?? "",
+        metadata?.type ?? "",
+        ...(metadata?.tags ?? []),
+        metadata?.created_by ?? "",
+        metadata?.source_hash ?? "",
+        body,
+      ].join("\n").toLowerCase();
+      let score = 0;
+      for (const token of tokens) {
+        if (searchable.includes(token)) score += 1;
+        if ((metadata?.id ?? "").toLowerCase().includes(token)) score += 3;
+        if ((metadata?.type ?? "").toLowerCase() === token) score += 2;
+        if (body.toLowerCase().includes(token)) score += 1;
+      }
+      if (score > 0) {
+        const lower = body.toLowerCase();
+        const first = lower.indexOf(tokens[0]);
+        const snippet = first === -1 ? body.slice(0, 160) : body.slice(Math.max(0, first - 40), first + 120).replace(/\s+/g, " ").trim();
+        results.push({
+          path: file,
+          score,
+          id: metadata?.id ?? null,
+          type: metadata?.type ?? null,
+          updated_at: metadata?.updated_at ?? null,
+          snippet,
+          citation: formatCitation(file, metadata?.id ?? null),
+        });
+      }
+    }
+    return results.sort((left, right) => right.score - left.score || String(left.path).localeCompare(String(right.path)));
+  }
+
   /**
-   * Local full-text search over the payload records. Tokenizes the query and
-   * scores each record by front matter fields and body text; expired records
-   * are excluded. Returns matches sorted by score with a short snippet.
+   * Local full-text search over payload records. Search itself is read-only;
+   * memory.context() is the model-facing read path that records usage.
    */
   async search(request) {
     if (request?.query === undefined || typeof request.query !== "string" || request.query.trim().length === 0) {
@@ -692,43 +744,74 @@ export class MemoryRepository {
     let root;
     try { root = await this.inspect(); } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
     try {
-      const tokens = request.query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
-      if (tokens.length === 0) return failure("search-invalid-request");
-      const results = [];
-      const files = await this.payloadFiles(root);
-      for (const file of files) {
-        if (file === "summary.md" || !/\.md$/.test(file)) continue;
-        const content = await readFileSafe(join(root, file), "utf8").catch(() => "");
-        let metadata = null;
-        try { metadata = parseFrontMatter(content, file); } catch { continue; }
-        if (metadata !== null && isExpired(metadata)) continue;
-        const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
-        const searchable = [
-          metadata?.id ?? "",
-          metadata?.type ?? "",
-          ...(metadata?.tags ?? []),
-          metadata?.created_by ?? "",
-          metadata?.source_hash ?? "",
-          body,
-        ].join("\n").toLowerCase();
-        let score = 0;
-        for (const token of tokens) {
-          if (searchable.includes(token)) score += 1;
-          if ((metadata?.id ?? "").toLowerCase().includes(token)) score += 3;
-          if ((metadata?.type ?? "").toLowerCase() === token) score += 2;
-          if (body.toLowerCase().includes(token)) score += 1;
-        }
-        if (score > 0) {
-          const lower = body.toLowerCase();
-          const first = lower.indexOf(tokens[0]);
-          const snippet = first === -1 ? body.slice(0, 160) : body.slice(Math.max(0, first - 40), first + 120).replace(/\s+/g, " ").trim();
-          results.push({ path: file, score, id: metadata?.id ?? null, type: metadata?.type ?? null, updated_at: metadata?.updated_at ?? null, snippet });
-        }
-      }
-      results.sort((left, right) => right.score - left.score || String(left.path).localeCompare(String(right.path)));
+      const results = await this.collectSearchResults(root, request.query);
       return success({ query: request.query, count: results.length, results: results.slice(0, limit) });
     } catch (error) {
       return failure(error?.memoryCode ?? "search-failed");
+    }
+  }
+
+  /**
+   * Read a bounded memory context and record metadata-only usage feedback.
+   * Query matching chooses relevant candidates; usage order then determines
+   * the order in which selected records are injected into a future tool path.
+   */
+  async context(request = {}) {
+    const hasQuery = request?.query !== undefined;
+    if (hasQuery && (typeof request.query !== "string" || request.query.trim().length === 0)) return failure("context-invalid-request");
+    const limit = request?.limit === undefined ? 10 : request.limit;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20) return failure("context-invalid-request");
+    let root;
+    try { root = await this.inspect(); } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
+    try {
+      const usage = await readUsage(root);
+      let candidates;
+      if (hasQuery) {
+        candidates = (await this.collectSearchResults(root, request.query)).slice(0, limit);
+      } else {
+        candidates = [];
+        for (const file of await this.payloadFiles(root)) {
+          if (file === "summary.md" || !/\.md$/.test(file)) continue;
+          const content = await readFileSafe(join(root, file), "utf8").catch(() => "");
+          let metadata = null;
+          try { metadata = parseFrontMatter(content, file); } catch { continue; }
+          if (metadata !== null && isExpired(metadata)) continue;
+          candidates.push({
+            path: file,
+            score: 0,
+            id: metadata?.id ?? null,
+            type: metadata?.type ?? null,
+            updated_at: metadata?.updated_at ?? null,
+            citation: formatCitation(file, metadata?.id ?? null),
+          });
+        }
+        candidates = sortByUsage(candidates, usage).slice(0, limit);
+      }
+      const ordered = sortByUsage(candidates, usage);
+      const updatedUsage = await recordUsage(root, ordered.map((entry) => entry.path));
+      const records = [];
+      for (const entry of ordered) {
+        const content = await readFileSafe(join(root, entry.path), "utf8").catch(() => "");
+        const body = boundedContextBody(bodyWithoutFrontMatter(content));
+        const metadata = usageMetadata(entry.path, updatedUsage);
+        records.push({
+          path: entry.path,
+          id: entry.id ?? null,
+          type: entry.type ?? null,
+          content: body,
+          citation: entry.citation ?? formatCitation(entry.path, entry.id ?? null),
+          usage_count: metadata.usage_count,
+          last_usage: metadata.last_usage || null,
+          ...(hasQuery ? { score: entry.score } : {}),
+        });
+      }
+      return success({
+        query: hasQuery ? request.query : null,
+        count: records.length,
+        records,
+      });
+    } catch (error) {
+      return failure(error?.memoryCode ?? "context-failed");
     }
   }
 
@@ -954,6 +1037,7 @@ export class MemoryService extends TypertRemoteService {
   async applyPreview(request) { return await this.repository.applyPreview(request); }
   async discardPreview(request) { return await this.repository.discardPreview(request); }
   async search(request) { return await this.repository.search(request); }
+  async context(request) { return await this.repository.context(request); }
 }
 decorate(MemoryService, "getSettings", Remote("getSettings"));
 decorate(MemoryService, "setEnabled", Remote("setEnabled"));
@@ -968,6 +1052,7 @@ decorate(MemoryService, "previews", Remote("previews"));
 decorate(MemoryService, "applyPreview", Remote("applyPreview"));
 decorate(MemoryService, "discardPreview", Remote("discardPreview"));
 decorate(MemoryService, "search", Remote("search"));
+decorate(MemoryService, "context", Remote("context"));
 
 export function apply(ctx, entry) {
   const settings = new MemorySettingsBridge();
