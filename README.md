@@ -168,9 +168,9 @@ behavior is verified, not just snapshot-checked:
 
 - The E2E runner boots a throwaway DSH web profile on an ephemeral port: a
   fresh DSH_HOME reuses the pinned runtime and shared plugin store, symlinks
-  the local `dsh-memory`/`dsh-memory-ui` workspaces, seeds onboarding settings
-  and an empty fixture memory repository, and registers only the two memory
-  plugins via `--patch`. The live `~/.dsh`, memory store, and provider
+  the local source packages into a private module graph, seeds onboarding
+  settings and an empty fixture memory repository, and registers only the two
+  memory plugins via `--patch`. The live `~/.dsh`, memory store, and provider
   credentials are never touched.
 - Headless Chromium drives the real settings popover and asserts the
   desktop/light layout, absence of the removed Legacy migration UI, empty

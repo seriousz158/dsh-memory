@@ -105,7 +105,7 @@ window.__ModuleLoader__.load({
     // Inline two-step confirm: click arms the cluster, Escape / 取消 / 3s timer
     // disarm it. The cluster lives inside an aria-live region owned by the
     // caller so screen readers announce both the prompt and the countdown note.
-    function ConfirmButton({ variant, tone, label, busyLabel, confirmText, confirmLabel, busy, disabled, onConfirm }) {
+    function ConfirmButton({ variant, tone, label, busyLabel, confirmText, confirmLabel, ariaLabel, busy, disabled, onConfirm, onComplete }) {
       const [confirming, setConfirming] = react.useState(false);
       const triggerRef = react.useRef(null);
       const confirmRef = react.useRef(null);
@@ -125,16 +125,21 @@ window.__ModuleLoader__.load({
         setConfirming(false);
         if (refocus) requestAnimationFrame(() => triggerRef.current?.focus());
       };
+      const execute = async () => {
+        setConfirming(false);
+        try { await onConfirm(); }
+        finally { onComplete?.(); }
+      };
       if (confirming && !busy) {
         return jsx.jsxs("span", { className: "dshmu_confirmCluster", role: "group", "aria-label": confirmText, onKeyDown: (event) => { if (event.key === "Escape") { event.stopPropagation(); disarm(true); } }, children: [
           jsx.jsx("span", { className: "dshmu_confirmText", children: confirmText }),
           jsx.jsx("span", { className: "dshmu_srOnly", children: "3 秒后自动取消" }),
-          jsx.jsx("button", { type: "button", ref: confirmRef, className: "dshmu_textBtn dshmu_textBtn--danger", onClick: () => { setConfirming(false); onConfirm(); }, children: confirmLabel }),
+          jsx.jsx("button", { type: "button", ref: confirmRef, className: "dshmu_textBtn dshmu_textBtn--danger", onClick: () => { void execute(); }, children: confirmLabel }),
           jsx.jsx("button", { type: "button", className: "dshmu_textBtn", onClick: () => disarm(true), children: "取消" }),
         ] });
       }
       const className = variant === "plain" ? "dshmu_button" : tone === "accent" ? "dshmu_textBtn dshmu_textBtn--accent" : tone === "danger" ? "dshmu_textBtn dshmu_textBtn--danger" : "dshmu_textBtn";
-      return jsx.jsx("button", { type: "button", ref: triggerRef, className, disabled: disabled || busy, onClick: () => setConfirming(true), children: busy ? busyLabel : label });
+      return jsx.jsx("button", { type: "button", ref: triggerRef, className, "aria-label": ariaLabel, disabled: disabled || busy, onClick: () => setConfirming(true), children: busy ? busyLabel : label });
     }
     const entry = {
       name: "dsh-memory-ui",
@@ -206,6 +211,17 @@ window.__ModuleLoader__.load({
               return () => { disposed = true; };
             }, [repositoryRevision]);
             const toggleRow = (id) => setOpenRow((current) => (current === id ? null : id));
+            const focusRow = (...ids) => {
+              let attempts = 0;
+              const focus = () => {
+                for (const id of ids) {
+                  const target = document.getElementById(`${baseId}-${id}-head`);
+                  if (target && !target.hidden && !target.closest("[hidden]") && (id === ids[0] || attempts >= 30)) { target.focus(); return; }
+                }
+                if (attempts++ < 30) requestAnimationFrame(focus);
+              };
+              requestAnimationFrame(focus);
+            };
             const rowKeyDown = (id) => (event) => {
               if (event.key !== "Escape") return;
               event.stopPropagation();
@@ -352,7 +368,7 @@ window.__ModuleLoader__.load({
                           lastRun.runId ? "运行 " : null,
                           lastRun.runId ? jsx.jsx("span", { className: "dshmu_mono", children: lastRun.runId }) : null,
                         ] }),
-                        lastRun.status === "applied" && lastRun.runId && jsx.jsx("div", { className: "dshmu_bodyActions", "aria-live": "polite", children: jsx.jsx(ConfirmButton, { variant: "plain", label: "回滚本次同步", busyLabel: "正在回滚…", confirmText: "确认回滚本次同步？", confirmLabel: "确认回滚", busy: rollbackBusy, disabled: !available, onConfirm: rollback }) }),
+                        lastRun.status === "applied" && lastRun.runId && jsx.jsx("div", { className: "dshmu_bodyActions", "aria-live": "polite", children: jsx.jsx(ConfirmButton, { variant: "plain", label: "回滚本次同步", busyLabel: "正在回滚…", confirmText: "确认回滚本次同步？", confirmLabel: "确认回滚", busy: rollbackBusy, disabled: !available, onConfirm: rollback, onComplete: () => focusRow("sync") }) }),
                         rollbackState && jsx.jsx("span", { className: rollbackState.error ? "dshmu_note dshmu_note--error" : "dshmu_note dshmu_note--success", role: "status", children: rollbackState.error ? `回滚失败：${rollbackState.error}` : rollbackState.success }),
                       ] })),
                     ] }),
@@ -372,8 +388,8 @@ window.__ModuleLoader__.load({
                             jsx.jsx("span", { className: "dshmu_mono", children: preview.preview_id }),
                             jsx.jsx("span", { className: "dshmu_previewPaths", title: pathsText, children: pathsText || "无变更" }),
                             jsx.jsxs("span", { className: "dshmu_previewActions", "aria-live": "polite", children: [
-                              jsx.jsx(ConfirmButton, { tone: "accent", label: "应用", busyLabel: "处理中…", confirmText: `应用预览 ${preview.preview_id}？`, confirmLabel: "确认应用", busy: previewBusy, disabled: !available, onConfirm: () => applyPreview(preview.preview_id) }),
-                              jsx.jsx(ConfirmButton, { tone: "default", label: "丢弃", busyLabel: "处理中…", confirmText: `丢弃预览 ${preview.preview_id}？`, confirmLabel: "确认丢弃", busy: previewBusy, disabled: !available, onConfirm: () => discardPreview(preview.preview_id) }),
+                              jsx.jsx(ConfirmButton, { tone: "accent", label: "应用", ariaLabel: `应用预览 ${preview.preview_id}`, busyLabel: "处理中…", confirmText: `应用预览 ${preview.preview_id}？`, confirmLabel: "确认应用", busy: previewBusy, disabled: !available, onConfirm: () => applyPreview(preview.preview_id), onComplete: () => focusRow("sync", "delete") }),
+                              jsx.jsx(ConfirmButton, { tone: "default", label: "丢弃", ariaLabel: `丢弃预览 ${preview.preview_id}`, busyLabel: "处理中…", confirmText: `丢弃预览 ${preview.preview_id}？`, confirmLabel: "确认丢弃", busy: previewBusy, disabled: !available, onConfirm: () => discardPreview(preview.preview_id), onComplete: () => focusRow("previews", "sync", "delete") }),
                             ] }),
                           ] }, preview.preview_id);
                         }),

@@ -214,7 +214,7 @@ def main() -> int:
             preview_line = preview_row.locator(".dshmu_previewLine")
             assert preview_line.get_by_text(preview_id).count() == 1, "preview id missing"
 
-            apply_button = preview_line.get_by_role("button", name="应用")
+            apply_button = preview_line.get_by_role("button", name=re.compile("^应用预览 "))
             apply_button.click()
             wait_for(
                 lambda: preview_line.get_by_text(f"应用预览 {preview_id}？").count() == 1,
@@ -238,6 +238,7 @@ def main() -> int:
 
             recent_row = panel.locator("section[aria-label='最近同步']")
             recent_head = recent_row.get_by_role("button", name=re.compile("最近同步"))
+            assert recent_head.evaluate("(el) => document.activeElement === el"), "apply completion should restore focus"
             recent_head.click()
             assert recent_row.locator(".dshmu_dot--success").count() == 1, "applied status must use success tone"
             rollback_button = recent_row.get_by_role("button", name="回滚本次同步")
@@ -252,6 +253,7 @@ def main() -> int:
             )
             assert recent_row.locator(".dshmu_dot--warning").count() == 1, "rolled-back status must use warning tone"
             assert recent_row.get_by_role("button", name="回滚本次同步").count() == 0, "rolled-back runs must not offer rollback"
+            assert recent_head.evaluate("(el) => document.activeElement === el"), "rollback completion should restore focus"
             print("dsh-memory e2e: accordion keyboard + status tones + confirmations OK")
             page.close()
 

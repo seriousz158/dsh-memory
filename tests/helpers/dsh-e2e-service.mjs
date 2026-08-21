@@ -2,17 +2,18 @@
 //
 // The helper builds a throwaway DSH_HOME under the OS temp dir that reuses the
 // pinned runtime and shared plugin store of the developer machine (or the
-// DSH_RUNTIME_ROOT override), symlinks the local dsh-memory/dsh-memory-ui
-// workspaces in, and serves the web app on an ephemeral port with a minimal
-// --patch that registers only the two memory plugins. The live ~/.dsh (or
-// $DSH_HOME) is never touched, and no provider credentials are configured.
+// DSH_RUNTIME_ROOT override), copies the local dsh-memory/dsh-memory-ui
+// workspaces into a private module graph, and serves the web app on an
+// ephemeral port with a minimal --patch that registers only the two memory
+// plugins. The live ~/.dsh (or $DSH_HOME) is never touched, and no provider
+// credentials are configured.
 //
 // A test that imports this module should call startIsolatedService() in a
 // before() hook and stopIsolatedService() after the suite.
 
 import { spawn, execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, rm, symlink, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, mkdir, writeFile, readdir, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +25,7 @@ const SYNC_APPLY = join(ROOT, "packages", "dsh-memory", "lib", "sync-apply.py");
 // The shared plugin store that contains every @deepseek-ai/* bundle. Defaults
 // to the deepseek-harness project runtime; an explicit DSH_RUNTIME_ROOT
 // (pointing at a .dsh home with profiles/node_modules) overrides it. The two
-// local dsh-memory packages are linked from this checkout below so E2E never
+// local dsh-memory packages are copied from this checkout below so E2E never
 // silently exercises an installed profile copy.
 const RUNTIME_ROOT = resolve(
   process.env.DSH_RUNTIME_ROOT
@@ -107,10 +108,25 @@ export async function startIsolatedService(options = {}) {
   // Reuse the shared plugin store and the pinned per-plugin profiles. The
   // memory packages themselves must come from this checkout; otherwise a
   // stale ~/.dsh profile can make source regressions invisible to CI.
-  await symlink(SHARED_MODULES, join(profiles, "node_modules"), "dir");
+  const nodeModules = join(profiles, "node_modules");
+  await mkdir(nodeModules, { recursive: true });
+  // Build a throwaway module directory instead of symlinking the shared
+  // directory wholesale. DSH resolves package names through this location;
+  // overriding the two memory entries here is what makes the E2E exercise
+  // the checkout rather than the installed profile copy.
+  for (const name of await readdir(SHARED_MODULES)) {
+    if (name === "dsh-memory" || name === "dsh-memory-ui") continue;
+    await symlink(join(SHARED_MODULES, name), join(nodeModules, name));
+  }
+  for (const name of ["dsh-memory", "dsh-memory-ui"]) {
+    // Copy into the temporary profile so Node resolves the DSH peer packages
+    // from the fixture's module graph, not from the checkout's node_modules
+    // (which would create duplicate Cordis/React module instances).
+    await cp(join(ROOT, "packages", name), join(nodeModules, name), { recursive: true });
+  }
   for (const name of ["web", "headless", "dsh-memory", "dsh-memory-ui"]) {
     const source = name === "dsh-memory" || name === "dsh-memory-ui"
-      ? join(ROOT, "packages", name)
+      ? join(nodeModules, name)
       : join(RUNTIME_ROOT, "profiles", name);
     await symlink(source, join(profiles, name), "dir");
   }
