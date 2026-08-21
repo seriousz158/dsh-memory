@@ -75,7 +75,12 @@ function bodyWithoutFrontMatter(content) {
 }
 function boundedContextBody(content, maxBytes = 4096) {
   const bytes = Buffer.from(content, "utf8");
-  return bytes.length <= maxBytes ? content : bytes.subarray(0, maxBytes).toString("utf8");
+  if (bytes.length <= maxBytes) return { content, truncated: false };
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  for (let end = maxBytes; end > 0; end -= 1) {
+    try { return { content: decoder.decode(bytes.subarray(0, end)), truncated: true }; } catch {}
+  }
+  return { content: "", truncated: true };
 }
 
 /** Recursively list files under a payload directory as root-relative paths. */
@@ -767,7 +772,7 @@ export class MemoryRepository {
       const usage = await readUsage(root);
       let candidates;
       if (hasQuery) {
-        candidates = (await this.collectSearchResults(root, request.query)).slice(0, limit);
+        candidates = sortByUsage(await this.collectSearchResults(root, request.query), usage).slice(0, limit);
       } else {
         candidates = [];
         for (const file of await this.payloadFiles(root)) {
@@ -798,7 +803,8 @@ export class MemoryRepository {
           path: entry.path,
           id: entry.id ?? null,
           type: entry.type ?? null,
-          content: body,
+          content: body.content,
+          truncated: body.truncated,
           citation: entry.citation ?? formatCitation(entry.path, entry.id ?? null),
           usage_count: metadata.usage_count,
           last_usage: metadata.last_usage || null,

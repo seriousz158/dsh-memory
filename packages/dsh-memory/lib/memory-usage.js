@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
@@ -6,6 +6,7 @@ export const USAGE_FILE = ".sync/usage.json";
 export const USAGE_SCHEMA_VERSION = 1;
 const MAX_USAGE_BYTES = 1024 * 1024;
 const USAGE_LOCK = ".sync/usage.lock";
+const USAGE_TEMP = ".sync/.usage.*.tmp";
 const USAGE_LOCK_TIMEOUT_MS = 30_000;
 const PAYLOAD_ROOTS = new Set(["handbook", "rollouts", "archive"]);
 const usageQueues = new Map();
@@ -63,12 +64,17 @@ async function ensureGitExclude(root) {
   const infoRoot = join(gitRoot, "info");
   await ensurePrivateDirectory(infoRoot);
   const exclude = join(infoRoot, "exclude");
+  const excludeStat = await lstat(exclude).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (excludeStat !== null && (excludeStat.isSymbolicLink() || !excludeStat.isFile())) throw usageError("unsafe-layout");
   const current = await readFile(exclude, "utf8").catch((error) => {
     if (error?.code === "ENOENT") return "";
     throw error;
   });
   const lines = current.split(/\r?\n/);
-  const missing = [USAGE_FILE, USAGE_LOCK].filter((entry) => !lines.includes(entry));
+  const missing = [USAGE_FILE, USAGE_LOCK, USAGE_TEMP].filter((entry) => !lines.includes(entry));
   if (missing.length === 0) return;
   const suffix = current.length === 0 || current.endsWith("\n") ? "" : "\n";
   await writeFile(exclude, `${current}${suffix}${missing.join("\n")}\n`, { mode: 0o600 });
@@ -80,12 +86,24 @@ async function acquireUsageLock(syncRoot) {
   for (let attempt = 0; attempt < 400; attempt += 1) {
     try {
       await mkdir(lockPath, { mode: 0o700 });
+      await writeFile(join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }) + "\n", { mode: 0o600 });
       return lockPath;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
       const lockStat = await lstat(lockPath).catch(() => null);
       if (lockStat === null) continue;
-      if (Date.now() - lockStat.mtimeMs > USAGE_LOCK_TIMEOUT_MS) {
+      const owner = await readFile(join(lockPath, "owner.json"), "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
+      const ownerPid = Number.isInteger(owner?.pid) ? owner.pid : null;
+      let ownerAlive = false;
+      if (ownerPid !== null && ownerPid > 0) {
+        try {
+          process.kill(ownerPid, 0);
+          ownerAlive = true;
+        } catch (ownerError) {
+          ownerAlive = ownerError?.code === "EPERM";
+        }
+      }
+      if (!ownerAlive && Date.now() - lockStat.mtimeMs > USAGE_LOCK_TIMEOUT_MS) {
         await rm(lockPath, { recursive: true, force: true });
         continue;
       }
@@ -93,6 +111,14 @@ async function acquireUsageLock(syncRoot) {
     }
   }
   throw usageError("usage-busy");
+}
+
+async function cleanupUsageTemps(syncRoot) {
+  const entries = await readdir(syncRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.name.startsWith(".usage.") || !entry.name.endsWith(".tmp")) continue;
+    await rm(join(syncRoot, entry.name), { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function withUsageLock(root, callback) {
@@ -106,6 +132,7 @@ async function withUsageLock(root, callback) {
   try {
     await ensurePrivateDirectory(syncRoot);
     lockPath = await acquireUsageLock(syncRoot);
+    await cleanupUsageTemps(syncRoot);
     return await callback();
   } finally {
     if (lockPath !== undefined) await rm(lockPath, { recursive: true, force: true }).catch(() => {});

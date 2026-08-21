@@ -15,11 +15,13 @@ await git(root, ["config", "user.email", "dsh-memory-context@example.invalid"]);
 for (const dir of ["handbook", "rollouts", "archive", ".sync"]) await mkdir(join(root, dir));
 await writeFile(join(root, "summary.md"), "navigation\n");
 await writeFile(join(root, ".last-sync"), "0\n");
-await writeFile(join(root, ".sync", ".gitignore"), "usage.json\n", { mode: 0o600 });
+await writeFile(join(root, ".sync", ".gitignore"), "usage.json\nusage.lock/\n.usage.*.tmp\n", { mode: 0o600 });
 await writeFile(join(root, "handbook", "alpha.md"), `---
 schema_version: 1
 id: project/alpha
 type: decision
+tags:
+  - architecture
 ---
 Shared architecture decision alpha.
 `);
@@ -27,10 +29,14 @@ await writeFile(join(root, "rollouts", "beta.md"), `---
 schema_version: 1
 id: project/beta
 type: decision
+tags:
+  - architecture
 ---
 Shared architecture decision beta.
 `);
+await writeFile(join(root, "archive", "gamma.md"), "gamma architecture\n");
 await writeFile(join(root, "archive", "legacy.md"), "Shared legacy note.\n");
+await writeFile(join(root, "archive", "long.md"), "长".repeat(2500));
 await git(root, ["add", "."]);
 await git(root, ["commit", "-m", "context fixture"]);
 
@@ -38,21 +44,30 @@ const service = new MemoryRepository({ root, __testOnly: true });
 const initial = await service.context();
 assert.equal(initial.ok, true);
 assert.deepEqual(initial.value.records.map((record) => record.path), [
+  "archive/gamma.md",
   "archive/legacy.md",
+  "archive/long.md",
   "handbook/alpha.md",
   "rollouts/beta.md",
 ]);
-assert.equal(initial.value.records[1].content, "Shared architecture decision alpha.\n");
-assert.equal(initial.value.records[1].citation, "[source: handbook/alpha.md · id: project/alpha]");
-assert.equal(initial.value.records[1].usage_count, 1);
+const alpha = initial.value.records.find((record) => record.path === "handbook/alpha.md");
+assert.equal(alpha.content, "Shared architecture decision alpha.\n");
+assert.equal(alpha.citation, "[source: handbook/alpha.md · id: project/alpha]");
+assert.equal(alpha.usage_count, 1);
+const long = initial.value.records.find((record) => record.path === "archive/long.md");
+assert.equal(long.truncated, true);
+assert.equal(Buffer.byteLength(long.content, "utf8") <= 4096, true);
+assert.doesNotMatch(long.content, /�/);
+
+for (let index = 0; index < 3; index += 1) await service.context({ query: "gamma", limit: 1 });
 
 const searched = await service.context({ query: "architecture", limit: 2 });
 assert.equal(searched.ok, true);
 assert.deepEqual(searched.value.records.map((record) => record.path), [
+  "archive/gamma.md",
   "handbook/alpha.md",
-  "rollouts/beta.md",
 ]);
-assert.equal(searched.value.records[0].usage_count, 2);
+assert.equal(searched.value.records[0].usage_count, 5);
 assert.equal(searched.value.records[1].usage_count, 2);
 assert.equal(searched.value.records[0].score > 0, true);
 

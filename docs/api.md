@@ -449,6 +449,7 @@ full-text matches are selected first and then ordered by `usage_count`,
         "id": "project/codegen",
         "type": "decision",
         "content": "We chose TypeScript for the codegen pipeline.\n",
+        "truncated": false,
         "citation": "[source: handbook/project.md · id: project/codegen]",
         "usage_count": 3,
         "last_usage": "2026-08-21T02:00:00.000Z",
@@ -463,7 +464,8 @@ full-text matches are selected first and then ordered by `usage_count`,
 bounded to 4 KiB. A successful context read increments metadata-only usage in
 `.sync/usage.json`; the sidecar is atomically written with owner-only
 permissions and is excluded from Git. It contains no memory body, transcript,
-prompt, or credential. Failures use `context-invalid-request`,
+prompt, or credential. `truncated` is true when the body reached the 4 KiB
+limit. Failures use `context-invalid-request`,
 `usage-invalid`, `unsafe-layout`, `repo-unavailable`, or `context-failed`.
 
 ### Front matter schema (v0.4)

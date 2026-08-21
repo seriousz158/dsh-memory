@@ -17,9 +17,11 @@ const execFile = promisify(execFileCallback);
 const root = await mkdtemp(join(tmpdir(), "dsh-memory-usage-"));
 await mkdir(join(root, ".sync"), { mode: 0o700 });
 await writeFile(join(root, ".sync", ".gitignore"), "usage.json\n", { mode: 0o600 });
+await mkdir(join(root, ".sync", ".usage.dead.tmp"), { mode: 0o700 });
 
 const first = new Date("2026-08-21T01:00:00.000Z");
 await recordUsage(root, ["handbook/alpha.md", "rollouts/beta.md"], first);
+await assert.rejects(() => stat(join(root, ".sync", ".usage.dead.tmp")), (error) => error?.code === "ENOENT");
 await recordUsage(root, ["handbook/alpha.md"], new Date("2026-08-21T02:00:00.000Z"));
 
 const usage = await readUsage(root);
