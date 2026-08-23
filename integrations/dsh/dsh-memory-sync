@@ -525,7 +525,7 @@ mkdir -p "$STAGING_PARENT"
 umask 077
 
 apply_output=""
-if ! apply_output="$(sync_apply stage-copy --root "$DSH_MEMORY_ROOT" --staging "$STAGING" --manifest "$MANIFEST")"; then
+if ! apply_output="$(sync_apply stage-copy --root "$DSH_MEMORY_ROOT" --staging "$STAGING" --manifest "$MANIFEST" --run-id "$RUN_ID")"; then
   apply_error="$(json_error_code "$apply_output")"
   write_failure_record "$apply_error" staging "$apply_output"
   print -u2 -- "dsh-memory-sync: staging copy failed: $apply_error"
@@ -640,7 +640,7 @@ if [[ "$DRY_RUN" == "0" ]]; then
     --phase validating --started-at "$STARTED_AT" >/dev/null
 fi
 difference=""
-if ! difference="$(sync_apply diff --staging "$STAGING" --manifest "$MANIFEST")"; then
+if ! difference="$(sync_apply diff --staging "$STAGING" --manifest "$MANIFEST" --run-id "$RUN_ID")"; then
   diff_error="$(json_error_code "$difference")"
   write_failure_record "$diff_error" validating "$difference"
   print -u2 -- "dsh-memory-sync: staging diff failed: $diff_error"

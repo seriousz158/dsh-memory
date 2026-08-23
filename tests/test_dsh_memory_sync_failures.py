@@ -50,11 +50,13 @@ def test_baseline_duplicate():
         init_root(root, duplicate=True)
         staging = pathlib.Path(directory) / "staging"
         manifest = pathlib.Path(directory) / "manifest.json"
-        code, result = run_helper("stage-copy", "--root", root, "--staging", staging, "--manifest", manifest)
+        code, result = run_helper("stage-copy", "--root", root, "--staging", staging, "--manifest", manifest,
+                                  "--run-id", "20260824T000000Z-dup00001")
         assert code != 0
         assert result["error"]["code"] == "duplicate-id", result
         assert result["error"]["phase"] == "baseline", result
         assert result["error"]["id"] == "same-record", result
+        assert result["error"]["run_id"] == "20260824T000000Z-dup00001", result
         assert {result["error"]["first_path"], result["error"]["second_path"]} == {
             "handbook/a.md", "rollouts/b.md"
         }, result
@@ -71,10 +73,12 @@ def test_staging_duplicate():
         assert code == 0, result
         original = (staging / "handbook/a.md").read_text(encoding="utf-8")
         (staging / "rollouts/b.md").write_text(original, encoding="utf-8")
-        code, result = run_helper("diff", "--staging", staging, "--manifest", manifest)
+        code, result = run_helper("diff", "--staging", staging, "--manifest", manifest,
+                                  "--run-id", "20260824T000001Z-dup00002")
         assert code != 0
         assert result["error"]["code"] == "duplicate-id", result
         assert result["error"]["phase"] == "staging-diff", result
+        assert result["error"]["run_id"] == "20260824T000001Z-dup00002", result
 
 
 def test_failure_state_semantics():

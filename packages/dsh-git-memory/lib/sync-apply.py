@@ -660,16 +660,19 @@ def resolve_topic_conflict(records, now=None):
     )[0]
 
 
-def duplicate_error(record_id, first_path, second_path, phase):
-    return SyncError("duplicate-id", {
+def duplicate_error(record_id, first_path, second_path, phase, run_id=None):
+    details = {
         "phase": phase,
         "id": record_id,
         "first_path": first_path,
         "second_path": second_path,
-    })
+    }
+    if run_id is not None:
+        details["run_id"] = run_id
+    return SyncError("duplicate-id", details)
 
 
-def scan_duplicate_ids(directory_fd, file_iterator, phase):
+def scan_duplicate_ids(directory_fd, file_iterator, phase, run_id=None):
     ids = {}
     for relative, _entry_stat in file_iterator:
         if not relative.endswith(".md") or not path_is_payload(relative):
@@ -691,11 +694,11 @@ def scan_duplicate_ids(directory_fd, file_iterator, phase):
         record_id = parse_record_metadata(text, relative)
         if record_id is not None:
             if record_id in ids:
-                raise duplicate_error(record_id, ids[record_id], relative, phase)
+                raise duplicate_error(record_id, ids[record_id], relative, phase, run_id)
             ids[record_id] = relative
 
 
-def validate_staging_limits(staging_fd, manifest, phase="staging-diff"):
+def validate_staging_limits(staging_fd, manifest, phase="staging-diff", run_id=None):
     baseline = {entry["path"]: entry for entry in manifest.get("entries", [])}
     observed = {}
     ids = {}
@@ -725,7 +728,7 @@ def validate_staging_limits(staging_fd, manifest, phase="staging-diff"):
         record_id = parse_record_metadata(text, relative)
         if record_id is not None:
             if record_id in ids:
-                raise duplicate_error(record_id, ids[record_id], relative, phase)
+                raise duplicate_error(record_id, ids[record_id], relative, phase, run_id)
             ids[record_id] = relative
         observed[relative] = {"size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
     added = [path for path in observed if path not in baseline and path_is_payload(path)]
@@ -831,7 +834,7 @@ def snapshot_manifest(root_fd):
     return entries
 
 
-def stage_copy(root, staging, manifest_path):
+def stage_copy(root, staging, manifest_path, run_id=None):
     root_fd = open_root(root)
     try:
         validate_live_layout(root_fd)
@@ -857,7 +860,7 @@ def stage_copy(root, staging, manifest_path):
             # Detect pre-existing live-root record collisions before creating
             # a baseline manifest. This is diagnostic-only: no record is
             # silently selected or removed.
-            scan_duplicate_ids(root_fd, walk_live_tree(root_fd), "baseline")
+            scan_duplicate_ids(root_fd, walk_live_tree(root_fd), "baseline", run_id)
         finally:
             os.close(staging_fd)
         head_sha = None
@@ -879,12 +882,12 @@ def stage_copy(root, staging, manifest_path):
         os.close(root_fd)
 
 
-def verify_staging(root, staging, manifest_path):
+def verify_staging(root, staging, manifest_path, run_id=None):
     manifest = json.loads(read_text(manifest_path))
     readonly_sha = {entry["path"]: entry["sha256"] for entry in manifest.get("entries", []) if path_is_readonly(entry["path"])}
     staging_fd = os.open(staging, os.O_RDONLY | DIRECTORY | NOFOLLOW)
     try:
-        limits = validate_staging_limits(staging_fd, manifest)
+        limits = validate_staging_limits(staging_fd, manifest, run_id=run_id)
         observed = {}
         for relative, entry_stat in walk_staging_tree(staging_fd):
             file_fd = open_regular(staging_fd, relative)
@@ -900,12 +903,12 @@ def verify_staging(root, staging, manifest_path):
     return {"ok": True, "value": limits}
 
 
-def diff_staging(staging, manifest_path):
+def diff_staging(staging, manifest_path, run_id=None):
     manifest = json.loads(read_text(manifest_path))
     baseline = {entry["path"]: entry["sha256"] for entry in manifest.get("entries", [])}
     staging_fd = os.open(staging, os.O_RDONLY | DIRECTORY | NOFOLLOW)
     try:
-        limits = validate_staging_limits(staging_fd, manifest)
+        limits = validate_staging_limits(staging_fd, manifest, run_id=run_id)
         observed = {}
         for relative, entry_stat in walk_staging_tree(staging_fd):
             file_fd = open_regular(staging_fd, relative)
@@ -1076,8 +1079,8 @@ def replace_current_index(root, entries):
 
 def apply_transaction(root, staging, manifest_path, run_id, started_at):
     manifest = json.loads(read_text(manifest_path))
-    verify_staging(root, staging, manifest_path)
-    difference = diff_staging(staging, manifest_path)["value"]
+    verify_staging(root, staging, manifest_path, run_id)
+    difference = diff_staging(staging, manifest_path, run_id)["value"]
     changed_paths = difference["added"] + difference["modified"] + difference["deleted"]
     if not changed_paths:
         return {"ok": True, "value": {
@@ -1440,11 +1443,11 @@ def main():
     if args.operation == "recover-active":
         return {"ok": True, "value": recover_active(args.root)}
     if args.operation == "stage-copy":
-        return stage_copy(args.root, args.staging, args.manifest)
+        return stage_copy(args.root, args.staging, args.manifest, args.run_id)
     if args.operation == "verify-staging":
-        return verify_staging(args.root, args.staging, args.manifest)
+        return verify_staging(args.root, args.staging, args.manifest, args.run_id)
     if args.operation == "diff":
-        return diff_staging(args.staging, args.manifest)
+        return diff_staging(args.staging, args.manifest, args.run_id)
     if args.operation == "mirror-payload":
         return mirror_payload(args.root, args.staging)
     if args.operation == "apply":
