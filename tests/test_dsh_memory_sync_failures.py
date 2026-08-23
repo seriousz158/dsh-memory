@@ -122,9 +122,25 @@ def test_readonly_reference_is_not_payload():
     assert SYNC_APPLY.path_is_readonly("README.md") is True
 
 
+def test_summary_budget_fails_closed():
+    with tempfile.TemporaryDirectory(prefix="dsh-memory-summary-budget-") as directory:
+        root = pathlib.Path(directory) / "memory"
+        root.mkdir()
+        init_root(root)
+        staging = pathlib.Path(directory) / "staging"
+        manifest = pathlib.Path(directory) / "manifest.json"
+        code, result = run_helper("stage-copy", "--root", root, "--staging", staging, "--manifest", manifest)
+        assert code == 0, result
+        (staging / "summary.md").write_text("x" * (12 * 1024 + 1), encoding="utf-8")
+        code, result = run_helper("diff", "--staging", staging, "--manifest", manifest)
+        assert code != 0
+        assert result["error"]["code"] == "summary-too-large", result
+
+
 if __name__ == "__main__":
     test_baseline_duplicate()
     test_staging_duplicate()
     test_failure_state_semantics()
     test_readonly_reference_is_not_payload()
+    test_summary_budget_fails_closed()
     print("dsh-memory sync failure diagnostics tests passed")

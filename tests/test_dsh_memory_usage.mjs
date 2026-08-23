@@ -12,6 +12,7 @@ import {
   recordUsage,
   sortByUsage,
 } from "../packages/dsh-memory/lib/memory-usage.js";
+import { legacyId } from "../packages/dsh-memory/lib/legacy-migration.js";
 
 const execFile = promisify(execFileCallback);
 const root = await mkdtemp(join(tmpdir(), "dsh-memory-usage-"));
@@ -28,7 +29,7 @@ await recordUsage(root, ["handbook/alpha.md"], new Date("2026-08-21T02:00:00.000
 const usage = await readUsage(root);
 assert.equal(usage.schema_version, 1);
 assert.deepEqual(usage.records["handbook/alpha.md"], {
-  logical_id: "handbook/alpha.md",
+  logical_id: legacyId("handbook/alpha.md"),
   generation: 1,
   content_hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   usage_count: 2,
@@ -37,7 +38,7 @@ assert.deepEqual(usage.records["handbook/alpha.md"], {
   decay_factor: 0.5,
 });
 assert.deepEqual(usage.records["rollouts/beta.md"], {
-  logical_id: "rollouts/beta.md",
+  logical_id: legacyId("rollouts/beta.md"),
   generation: 1,
   content_hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   usage_count: 1,
@@ -52,7 +53,7 @@ const changed = (await readUsage(root)).records["handbook/alpha.md"];
 assert.equal(changed.generation, 2);
 assert.equal(changed.usage_count, 1);
 assert.equal(changed.prior_usage_count, 2);
-assert.equal(changed.logical_id, "handbook/alpha.md");
+assert.equal(changed.logical_id, legacyId("handbook/alpha.md"));
 
 const usagePath = join(root, USAGE_FILE);
 assert.equal((await stat(usagePath)).mode & 0o777, 0o600);

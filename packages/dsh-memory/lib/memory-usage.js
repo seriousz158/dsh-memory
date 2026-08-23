@@ -2,6 +2,7 @@ import { chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "n
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { legacyId } from "./legacy-migration.js";
 import { parseFrontMatter } from "./memory-metadata.js";
 
 export const USAGE_FILE = ".sync/usage.json";
@@ -12,6 +13,16 @@ const USAGE_TEMP = ".sync/.usage.*.tmp";
 const USAGE_LOCK_TIMEOUT_MS = 30_000;
 const PAYLOAD_ROOTS = new Set(["handbook", "rollouts", "archive"]);
 const usageQueues = new Map();
+
+export function contentHashOf(content) {
+  return `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
+}
+
+export function logicalIdForPath(path, metadata = null, previous = undefined) {
+  if (metadata?.id) return metadata.id;
+  if (typeof previous?.logical_id === "string" && previous.logical_id !== path) return previous.logical_id;
+  return legacyId(path);
+}
 
 function usageError(code) {
   return Object.assign(new Error(`memory usage state is invalid: ${code}`), { memoryCode: code });
@@ -188,10 +199,10 @@ export async function recordUsage(root, paths, now = new Date()) {
     const timestamp = date.toISOString();
     for (const path of uniquePaths) {
       const content = await readFile(join(root, path), "utf8").catch(() => "");
-      const contentHash = `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
+      const contentHash = contentHashOf(content);
       let metadata = null;
       try { metadata = parseFrontMatter(content, path); } catch {}
-      const logicalId = metadata?.id ?? usage.records[path]?.logical_id ?? path;
+      const logicalId = logicalIdForPath(path, metadata, usage.records[path]);
       const previous = usage.records[path] ?? {
         logical_id: logicalId,
         generation: 1,
@@ -231,7 +242,7 @@ export async function recordUsage(root, paths, now = new Date()) {
 function usageOf(entry, usage) {
   const value = usage?.records?.[entry.path];
   return {
-    logical_id: typeof value?.logical_id === "string" ? value.logical_id : entry.id ?? entry.path,
+    logical_id: typeof value?.logical_id === "string" ? value.logical_id : entry.id ?? legacyId(entry.path),
     generation: Number.isInteger(value?.generation) ? value.generation : 1,
     content_hash: typeof value?.content_hash === "string" ? value.content_hash : null,
     usage_count: Number.isInteger(value?.usage_count) ? value.usage_count : 0,

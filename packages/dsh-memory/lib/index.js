@@ -20,8 +20,8 @@ import {
   writeActiveRun,
 } from "./operation-lock.js";
 import { parseFrontMatter, isExpired, topicKey } from "./memory-metadata.js";
-import { legacyRecordSummary, migratedContent, scanLegacyRecords } from "./legacy-migration.js";
-import { formatCitation, readUsage, recordUsage, sortByUsage, usageMetadata } from "./memory-usage.js";
+import { legacyId, legacyRecordSummary, migratedContent, scanLegacyRecords } from "./legacy-migration.js";
+import { contentHashOf, formatCitation, readUsage, recordUsage, sortByUsage, usageMetadata } from "./memory-usage.js";
 import { SyncTransaction } from "./sync-transaction.js";
 
 const execFile = promisify(execFileCallback);
@@ -301,6 +301,7 @@ export class MemoryRepository {
       const targetDirty = (await this.git(["status", "--porcelain", "--", ...TARGETS])).stdout.trim().length > 0;
       const { legacyFileCount, pendingMigration } = await this.metadataStats(root);
       const lastRun = await this.readLastRun(root);
+      const retrySuppressed = await this.readRetrySuppressed(root);
       const summaryBytes = await this.summaryBytes(root);
       const failureSentinel = await this.readFailureSentinel(root);
       const finalizeFailure = await this.readFinalizeFailure(root);
@@ -314,6 +315,7 @@ export class MemoryRepository {
         legacyFileCount,
         pendingMigration,
         lastRun,
+        retrySuppressed,
         summaryBytes,
         summaryWithinBudget: summaryBytes <= SUMMARY_BUDGET_BYTES,
         failureSentinel,
@@ -350,6 +352,7 @@ export class MemoryRepository {
       const activeState = activeRun === null ? null : processAlive(activeRun.pid) ? "running" : "interrupted";
       const previews = await this.validPendingPreviews(root);
       const journalReadable = await this.journalIsReadable(root);
+      const retrySuppressed = await this.readRetrySuppressed(root);
       const summaryBytes = await this.summaryBytes(root);
       const failureSentinel = await this.readFailureSentinel(root);
       const finalizeFailure = await this.readFinalizeFailure(root);
@@ -366,6 +369,7 @@ export class MemoryRepository {
         summaryWithinBudget: summaryBytes <= SUMMARY_BUDGET_BYTES,
         failureSentinel,
         finalizeFailure,
+        retrySuppressed,
         payloadDirty,
         operationLock: operationLock === null ? null : {
           operation: operationLock.operation ?? null,
@@ -417,6 +421,21 @@ export class MemoryRepository {
   async readFinalizeFailure(root) {
     try {
       return JSON.parse(await readFileSafe(join(root, ".sync", "finalize-failure.json"), "utf8"));
+    } catch { return null; }
+  }
+
+  async readRetrySuppressed(root) {
+    try {
+      const runIds = (await this.listRunIds(root)).sort().reverse();
+      if (runIds.length === 0) return null;
+      const latest = await this.readRun(root, runIds[0]);
+      if (latest?.status !== "skipped-retry") return null;
+      return {
+        runId: latest.run_id ?? runIds[0],
+        errorCode: latest.error_code ?? null,
+        candidateDigest: latest.candidate_digest ?? null,
+        retryAt: latest.retry_at ?? null,
+      };
     } catch { return null; }
   }
 
@@ -749,7 +768,7 @@ export class MemoryRepository {
     }
   }
 
-  async collectSearchResults(root, query, includeArchive = false) {
+  async collectSearchResults(root, query, includeArchive = false, usage = undefined) {
     const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
     if (tokens.length === 0) throw memoryError("search-invalid-request");
     const results = [];
@@ -761,9 +780,11 @@ export class MemoryRepository {
       let metadata = null;
       try { metadata = parseFrontMatter(content, file); } catch { continue; }
       if (metadata !== null && isExpired(metadata)) continue;
+      const recordId = metadata?.id ?? legacyId(file);
+      const usageInfo = usageMetadata(file, usage);
       const body = bodyWithoutFrontMatter(content);
       const searchable = [
-        metadata?.id ?? "",
+        recordId,
         metadata?.type ?? "",
         ...(metadata?.tags ?? []),
         metadata?.created_by ?? "",
@@ -773,7 +794,7 @@ export class MemoryRepository {
       let score = 0;
       for (const token of tokens) {
         if (searchable.includes(token)) score += 1;
-        if ((metadata?.id ?? "").toLowerCase().includes(token)) score += 3;
+        if (recordId.toLowerCase().includes(token)) score += 3;
         if ((metadata?.type ?? "").toLowerCase() === token) score += 2;
         if (body.toLowerCase().includes(token)) score += 1;
       }
@@ -784,11 +805,15 @@ export class MemoryRepository {
         results.push({
           path: file,
           score,
-          id: metadata?.id ?? null,
+          id: recordId,
           type: metadata?.type ?? null,
           updated_at: metadata?.updated_at ?? null,
+          content_hash: usageInfo.content_hash ?? contentHashOf(content),
+          generation: usageInfo.generation,
+          source_rollouts: metadata?.source_rollouts ?? [],
+          source_session_digest: metadata?.source_session_digest ?? null,
           snippet,
-          citation: formatCitation(file, metadata?.id ?? null),
+          citation: formatCitation(file, recordId),
         });
       }
     }
@@ -809,7 +834,8 @@ export class MemoryRepository {
     let root;
     try { root = await this.inspect(); } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
     try {
-      const results = (await this.collectSearchResults(root, request.query, scope !== "active"))
+      const usage = await readUsage(root);
+      const results = (await this.collectSearchResults(root, request.query, scope !== "active", usage))
         .filter((entry) => scope !== "archive" || entry.path.startsWith("archive/"));
       return success({ query: request.query, count: results.length, results: results.slice(0, limit) });
     } catch (error) {
@@ -835,7 +861,7 @@ export class MemoryRepository {
       const usage = await readUsage(root);
       let candidates;
       if (hasQuery) {
-        candidates = sortByUsage(await this.collectSearchResults(root, request.query, scope !== "active"), usage).slice(0, limit);
+        candidates = sortByUsage(await this.collectSearchResults(root, request.query, scope !== "active", usage), usage).slice(0, limit);
       } else {
         candidates = [];
         for (const file of await this.payloadFiles(root)) {
@@ -846,13 +872,16 @@ export class MemoryRepository {
           let metadata = null;
           try { metadata = parseFrontMatter(content, file); } catch { continue; }
           if (metadata !== null && isExpired(metadata)) continue;
+          const recordId = metadata?.id ?? legacyId(file);
           candidates.push({
             path: file,
             score: 0,
-            id: metadata?.id ?? null,
+            id: recordId,
             type: metadata?.type ?? null,
             updated_at: metadata?.updated_at ?? null,
-            citation: formatCitation(file, metadata?.id ?? null),
+            source_rollouts: metadata?.source_rollouts ?? [],
+            source_session_digest: metadata?.source_session_digest ?? null,
+            citation: formatCitation(file, recordId),
           });
         }
         candidates = sortByUsage(candidates, usage).slice(0, limit);
@@ -877,6 +906,8 @@ export class MemoryRepository {
           generation: metadata.generation,
           content_hash: metadata.content_hash,
           prior_usage_count: metadata.prior_usage_count,
+          source_rollouts: entry.source_rollouts ?? [],
+          source_session_digest: entry.source_session_digest ?? null,
           ...(hasQuery ? { score: entry.score } : {}),
         });
       }

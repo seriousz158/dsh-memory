@@ -29,6 +29,7 @@ zsh tests/test_dsh_memory_sync_disabled.sh
 zsh tests/test_dsh_memory_sync_env.sh
 zsh tests/test_dsh_memory_sync_dry_run.sh
 zsh tests/test_dsh_memory_sync_lock.sh
+zsh tests/test_dsh_memory_sync_batch.sh
 zsh tests/test_dsh_memory_sync_preview.sh
 zsh tests/test_dsh_memory_sync_no_change.sh
 zsh tests/test_dsh_memory_backup.sh

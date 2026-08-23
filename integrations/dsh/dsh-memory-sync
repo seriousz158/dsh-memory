@@ -19,6 +19,7 @@ SYNC_APPLY="${DPSK_MEMORY_SYNC_HELPER:-$REPOSITORY_ROOT/packages/dsh-memory/lib/
 DSH_HOME="${DSH_HOME:-${HOME:?HOME is required}/.dsh}"
 DSH_MEMORY_ROOT="${DSH_MEMORY_ROOT:-$DSH_HOME/storages/memory}"
 MARKER="$DSH_MEMORY_ROOT/.last-sync"
+PENDING_CANDIDATES="$DSH_MEMORY_ROOT/.sync/pending-candidates.json"
 DSH_BIN="${DSH_BIN:-dsh}"
 DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
 SYNC_POLICY_VERSION="${DSH_MEMORY_SYNC_POLICY_VERSION:-v0.8.1}"
@@ -34,6 +35,8 @@ SKIPPED_SESSIONS=0
 CANDIDATE_BYTES=0
 CANDIDATE_DIGEST=""
 CANDIDATE_MANIFEST_TMP=""
+CANDIDATE_TRUNCATED=0
+CANDIDATE_LIMIT_ERROR=""
 
 DRY_RUN=0
 PREVIEW_MODE=0
@@ -193,6 +196,87 @@ candidate_digest() {
   done | shasum -a 256 | awk '{print "sha256:" $1}'
 }
 
+candidate_file_digest() {
+  shasum -a 256 -- "$1" | awk '{print $1}'
+}
+
+pending_candidate_lines() {
+  [[ -f "$PENDING_CANDIDATES" ]] || return 0
+  "$PYTHON_BIN" - "$PENDING_CANDIDATES" <<'PY'
+import json
+import pathlib
+import sys
+
+try:
+    value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    raise SystemExit(0)
+for path, digest in (value.get("entries") or {}).items():
+    if isinstance(path, str) and isinstance(digest, str):
+        print(f"{path}\t{digest}")
+PY
+}
+
+pending_candidate_digest() {
+  local candidate="$1"
+  local digest="$2"
+  [[ -f "$PENDING_CANDIDATES" ]] || return 1
+  "$PYTHON_BIN" - "$PENDING_CANDIDATES" "$candidate" "$digest" <<'PY'
+import json
+import pathlib
+import sys
+
+try:
+    value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    raise SystemExit(1)
+raise SystemExit(0 if (value.get("entries") or {}).get(sys.argv[2]) == sys.argv[3] else 1)
+PY
+}
+
+write_pending_candidates() {
+  if [[ "$CANDIDATE_TRUNCATED" != "1" ]]; then
+    [[ "$DRY_RUN" == "0" && "$PREVIEW_MODE" == "0" ]] && rm -f -- "$PENDING_CANDIDATES"
+    return 0
+  fi
+  "$PYTHON_BIN" - "$PENDING_CANDIDATES" "${CANDIDATE_FILES[@]}" <<'PY'
+import json
+import os
+import pathlib
+import sys
+import tempfile
+import hashlib
+
+state_path = pathlib.Path(sys.argv[1])
+try:
+    current = json.loads(state_path.read_text())
+except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    current = {}
+entries = current.get("entries") if isinstance(current, dict) else {}
+if not isinstance(entries, dict):
+    entries = {}
+for path in sys.argv[2:]:
+    try:
+        digest = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+    except OSError:
+        continue
+    entries[path] = digest
+state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+fd, temporary = tempfile.mkstemp(prefix=".pending-candidates.", dir=state_path.parent)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump({"schema_version": 1, "entries": entries}, handle, separators=(",", ":"))
+        handle.write("\n")
+    os.replace(temporary, state_path)
+finally:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+PY
+}
+
 memory_sync_disabled() {
   local settings="$DSH_HOME/settings.yaml"
   [[ -f "$settings" ]] || return 1
@@ -285,19 +369,55 @@ if [[ -f "$MARKER" ]]; then
   while IFS= read -r candidate; do
     [[ -n "$candidate" ]] && CANDIDATE_FILES+=("$candidate")
   done < <(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$MARKER" ! -newermt '-1 hour' -print 2>/dev/null | sort)
+  # A capped batch intentionally leaves the watermark unchanged. Re-add the
+  # pending paths on the next run, then filter hashes already delivered so a
+  # new session cannot cause the previous batch to be sent to the provider a
+  # second time.
+  while IFS=$'\t' read -r pending_path pending_digest; do
+    [[ -n "$pending_path" && -f "$pending_path" ]] || continue
+    [[ "$(find "$pending_path" -newermt '-1 hour' -print -quit 2>/dev/null)" == "" ]] || continue
+    already_listed=0
+    for candidate in "${CANDIDATE_FILES[@]}"; do
+      [[ "$candidate" == "$pending_path" ]] && already_listed=1 && break
+    done
+    (( already_listed == 1 )) || CANDIDATE_FILES+=("$pending_path")
+  done < <(pending_candidate_lines)
+  typeset -a UNPROCESSED_CANDIDATES
+  UNPROCESSED_CANDIDATES=()
+  for candidate in "${CANDIDATE_FILES[@]}"; do
+    candidate_hash="$(candidate_file_digest "$candidate")"
+    if pending_candidate_digest "$candidate" "$candidate_hash"; then
+      continue
+    fi
+    UNPROCESSED_CANDIDATES+=("$candidate")
+  done
+  CANDIDATE_FILES=("${UNPROCESSED_CANDIDATES[@]}")
   typeset -a LIMITED_CANDIDATES
   LIMITED_CANDIDATES=()
   for candidate in "${CANDIDATE_FILES[@]}"; do
     local_size="$(stat -f %z -- "$candidate" 2>/dev/null || print 0)"
-    if (( ${#LIMITED_CANDIDATES} >= MAX_CANDIDATE_SESSIONS )); then break; fi
-    if (( CANDIDATE_BYTES + local_size > MAX_CANDIDATE_BYTES && ${#LIMITED_CANDIDATES} > 0 )); then break; fi
+    if (( local_size > MAX_CANDIDATE_BYTES )); then
+      CANDIDATE_LIMIT_ERROR="candidate-too-large"
+      break
+    fi
+    if (( ${#LIMITED_CANDIDATES} >= MAX_CANDIDATE_SESSIONS )); then
+      CANDIDATE_TRUNCATED=1
+      break
+    fi
+    if (( CANDIDATE_BYTES + local_size > MAX_CANDIDATE_BYTES )); then
+      CANDIDATE_TRUNCATED=1
+      break
+    fi
     LIMITED_CANDIDATES+=("$candidate")
     CANDIDATE_BYTES=$((CANDIDATE_BYTES + local_size))
   done
   CANDIDATE_FILES=("${LIMITED_CANDIDATES[@]}")
   CANDIDATE_SESSIONS=${#CANDIDATE_FILES}
   CANDIDATE_DIGEST="$(candidate_digest "${CANDIDATE_FILES[@]}")"
-  if [[ "$CANDIDATE_SESSIONS" == "0" ]]; then
+  if [[ -n "$CANDIDATE_LIMIT_ERROR" ]]; then
+    progress "candidate batch rejected: $CANDIDATE_LIMIT_ERROR"
+  elif [[ "$CANDIDATE_SESSIONS" == "0" ]]; then
+    [[ "$DRY_RUN" == "0" && "$PREVIEW_MODE" == "0" ]] && rm -f -- "$PENDING_CANDIDATES"
     if [[ "$DRY_RUN" == "1" ]]; then
       if [[ "$JSON_OUTPUT" == "1" ]]; then
         printf '{"ok":true,"dryRun":true,"candidateSessions":0,"changedPaths":[],"message":"no new idle session logs"}\n'
@@ -326,10 +446,7 @@ fi
 START_TS=$(date +%s)
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-$(/usr/bin/uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-' | cut -c1-8)
 STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-CANDIDATE_MANIFEST_TMP="${TMPDIR:-/tmp}/dsh-memory-candidates-$$.txt"
-if [[ "${#CANDIDATE_FILES}" -gt 0 ]]; then
-  print -rl -- "${CANDIDATE_FILES[@]}" > "$CANDIDATE_MANIFEST_TMP"
-fi
+CANDIDATE_MANIFEST_TMP=""
 
 # v0.3: serialize sync runs with a host-side operation lock and record the
 # active run so an interrupted process can be recovered on the next sync.
@@ -382,16 +499,29 @@ if [[ "$DRY_RUN" == "0" ]]; then
     --phase staging --started-at "$STARTED_AT" >/dev/null
 fi
 
+if [[ -n "$CANDIDATE_LIMIT_ERROR" ]]; then
+  if [[ "$DRY_RUN" == "1" ]]; then
+    if [[ "$JSON_OUTPUT" == "1" ]]; then
+      printf '{"ok":false,"dryRun":true,"error":{"code":"%s"}}\n' "$CANDIDATE_LIMIT_ERROR"
+    else
+      print -u2 -- "dsh-memory-sync: candidate batch rejected: $CANDIDATE_LIMIT_ERROR"
+    fi
+  else
+    write_failure_record "$CANDIDATE_LIMIT_ERROR" candidate-scan
+    print -u2 -- "dsh-memory-sync: candidate batch rejected: $CANDIDATE_LIMIT_ERROR"
+  fi
+  exit 1
+fi
+
 # --- Transaction setup: an isolated staging worktree + baseline manifest ---
 STAGING_PARENT="${TMPDIR:-/tmp}/dsh-memory-sync-$$"
 STAGING="$STAGING_PARENT/staging"
 MANIFEST="$STAGING_PARENT/manifest.json"
 HEADLESS_SESSION_ROOT="$STAGING_PARENT/headless-sessions"
 HEADLESS_SESSION_PATCH="$STAGING_PARENT/headless-session.patch.yml"
+SANITIZED_INPUT_ROOT="$STAGING/.dsh-memory-inputs"
+CANDIDATE_MANIFEST_TMP="$STAGING/.dsh-memory-candidates.txt"
 mkdir -p "$STAGING_PARENT"
-if [[ -n "$CANDIDATE_MANIFEST_TMP" && -f "$CANDIDATE_MANIFEST_TMP" ]]; then
-  cp -- "$CANDIDATE_MANIFEST_TMP" "$STAGING_PARENT/candidates.txt"
-fi
 umask 077
 
 apply_output=""
@@ -401,6 +531,35 @@ if ! apply_output="$(sync_apply stage-copy --root "$DSH_MEMORY_ROOT" --staging "
   print -u2 -- "dsh-memory-sync: staging copy failed: $apply_error"
   rm -rf -- "$STAGING_PARENT"
   exit 1
+fi
+
+# Host-side input isolation: the model receives only redacted transcripts in
+# the staging directory. It never receives the real session paths or the live
+# memory root, and the temporary input tree is removed before diff validation.
+FILTER_SESSION="$DSH_MEMORY_ROOT/scripts/filter_session.py"
+if [[ "${#CANDIDATE_FILES}" -gt 0 && ! -x "$FILTER_SESSION" ]]; then
+  write_failure_record "input-filter-unavailable" staging
+  print -u2 -- "dsh-memory-sync: session filter not found or not executable"
+  rm -rf -- "$STAGING_PARENT"
+  exit 1
+fi
+mkdir -m 700 -p "$SANITIZED_INPUT_ROOT"
+: > "$CANDIDATE_MANIFEST_TMP"
+if [[ "${#CANDIDATE_FILES}" -gt 0 ]]; then
+  input_index=0
+  for candidate in "${CANDIDATE_FILES[@]}"; do
+    input_name="$(printf 'session-%04d.md' "$input_index")"
+    input_path="$SANITIZED_INPUT_ROOT/$input_name"
+    if ! "$PYTHON_BIN" "$FILTER_SESSION" "$candidate" > "$input_path"; then
+      write_failure_record "input-filter-failed" staging
+      print -u2 -- "dsh-memory-sync: failed to redact a candidate session"
+      rm -rf -- "$STAGING_PARENT"
+      exit 1
+    fi
+    chmod 600 "$input_path"
+    print -r -- "$input_path" >> "$CANDIDATE_MANIFEST_TMP"
+    input_index=$((input_index + 1))
+  done
 fi
 
 # The rc.7 headless bundle deliberately persists every one-shot session. If
@@ -422,15 +581,14 @@ STAGING_PROMPT="你是 dsh-memory 的定时记忆整合代理，现在执行一�
 
 你在一个隔离的暂存记忆仓库中工作（$STAGING，git 版本化；宪法、「提炼与整合」一节的要求、硬规则见其 README.md，先读它）。你只能修改 $STAGING 下的 summary.md、handbook/、rollouts/、archive/；禁止修改 $STAGING/README.md，禁止创建其他文件或目录，禁止执行任何 git 命令。
 
-会话日志根：$DSH_HOME/sessions。同步标记：$MARKER（unix 秒时间戳文件）。
+宿主已在本地完成候选筛选和凭据脱敏。你只能读取临时脱敏转录，不能访问原始会话日志、真实 DSH_HOME 或真实记忆库。
 
-候选会话清单：$STAGING_PARENT/candidates.txt（宿主已按每轮最多 $MAX_CANDIDATE_SESSIONS 个会话、总输入最多 $MAX_CANDIDATE_BYTES 字节截断；只处理清单中的路径）。
+候选会话清单：$CANDIDATE_MANIFEST_TMP（每行是 staging 内的临时脱敏转录；宿主已按每轮最多 $MAX_CANDIDATE_SESSIONS 个会话、总输入最多 $MAX_CANDIDATE_BYTES 字节截断；只处理清单中的路径）。
 
 步骤：
-1. 若 $MARKER 不存在：只输出 NO_SIGNAL 并结束（首次运行不回溯历史会话）。
-2. 逐行读取候选会话清单；逐个执行 python3 \"$DSH_MEMORY_ROOT/scripts/filter_session.py\" '<日志路径>' > \"${TMPDIR:-/tmp}/dsh-memory-transcript.md\"，读转录并按 README「提炼与整合」一节的提炼要求提炼（无高信号则输出 NO_SIGNAL 并跳过该会话）。
+1. 逐行读取候选会话清单中的临时脱敏转录，按 README「提炼与整合」一节的提炼要求提炼（无高信号则输出 NO_SIGNAL 并跳过该会话）。
 3. 全部提炼完成后，严格按 README「提炼与整合」一节的整合要求执行 diff 式整合：与旧条目矛盾的内容覆盖旧条目（绝不叠加）、过时内容降级到 $STAGING/archive/、用户稳定偏好同步进 $STAGING/summary.md。summary.md 最终必须不超过 12 KiB；超出时压缩重复过程和细节，不得静默超过预算。
-4. 不要执行 git、不要更新 $MARKER；宿主会负责提交和记录。
+4. 不要执行 git、不要更新同步水位；宿主会负责提交和记录。
 
 收尾用一句话汇报：处理了几个会话、合并了几条记忆。"
 
@@ -462,6 +620,9 @@ child_status=0
   /usr/bin/env -i "${CHILD_ENV[@]}" "$DSH_EXECUTABLE" --profile headless \
     --patch "$HEADLESS_SESSION_PATCH" "$STAGING_PROMPT"
  ) || child_status=$?
+# The temporary transcript tree is host-owned input, not memory payload.
+rm -rf -- "$SANITIZED_INPUT_ROOT"
+rm -f -- "$CANDIDATE_MANIFEST_TMP"
 if [[ "$child_status" != "0" ]]; then
   write_failure_record "child-exit" staging
   print -u2 -- "dsh-memory-sync: headless DSH failed with exit code $child_status"
@@ -510,6 +671,9 @@ if [[ -z "$changed_paths" ]]; then
   # Preview runs are excluded: preview mode is an operator-review tool and
   # stays non-journaling (see the preview contract comment near the end).
   if [[ "$DRY_RUN" == "0" && "$PREVIEW_MODE" == "0" ]]; then
+    typeset -a FINALIZE_LAST_SYNC_ARGS
+    FINALIZE_LAST_SYNC_ARGS=()
+    [[ "$CANDIDATE_TRUNCATED" == "1" ]] || FINALIZE_LAST_SYNC_ARGS=(--last-sync "$START_TS")
     DURATION_MS=$(( ( $(date +%s) - START_TS ) * 1000 ))
     finalize_output=""
     if ! finalize_output="$(sync_apply finalize \
@@ -526,12 +690,13 @@ if [[ -z "$changed_paths" ]]; then
       --duration-ms "$DURATION_MS" \
       --candidate-digest "$CANDIDATE_DIGEST" \
       --sync-policy-version "$SYNC_POLICY_VERSION" \
-      --last-sync "$START_TS")"; then
+      "${FINALIZE_LAST_SYNC_ARGS[@]}")"; then
       sync_apply write-finalize-failure --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" \
         --candidate-digest "$CANDIDATE_DIGEST" >/dev/null 2>&1 || true
       print -u2 -- "dsh-memory-sync: finalize failed"
       exit 1
     fi
+    write_pending_candidates
     sync_apply clear-failure-sentinel --root "$DSH_MEMORY_ROOT" >/dev/null 2>&1 || true
   fi
   rm -rf -- "$STAGING_PARENT"
@@ -600,6 +765,9 @@ if [[ "$DRY_RUN" == "0" ]]; then
     --phase finalizing --started-at "$STARTED_AT" >/dev/null
 fi
 finalize_output=""
+typeset -a FINALIZE_LAST_SYNC_ARGS
+FINALIZE_LAST_SYNC_ARGS=()
+[[ "$CANDIDATE_TRUNCATED" == "1" ]] || FINALIZE_LAST_SYNC_ARGS=(--last-sync "$START_TS")
 if ! finalize_output="$(sync_apply finalize \
   --root "$DSH_MEMORY_ROOT" \
   --run-id "$RUN_ID" \
@@ -615,13 +783,14 @@ if ! finalize_output="$(sync_apply finalize \
   --duration-ms "$DURATION_MS" \
   --candidate-digest "$CANDIDATE_DIGEST" \
   --sync-policy-version "$SYNC_POLICY_VERSION" \
-  --last-sync "$START_TS")"; then
+  "${FINALIZE_LAST_SYNC_ARGS[@]}")"; then
   sync_apply write-finalize-failure --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" \
     --candidate-digest "$CANDIDATE_DIGEST" >/dev/null 2>&1 || true
   print -u2 -- "dsh-memory-sync: finalize failed"
   rm -rf -- "$STAGING_PARENT"
   exit 1
 fi
+write_pending_candidates
 sync_apply clear-failure-sentinel --root "$DSH_MEMORY_ROOT" >/dev/null 2>&1 || true
 
 if [[ "$DRY_RUN" == "0" ]]; then

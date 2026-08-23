@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { MemoryRepository } from "../packages/dsh-memory/lib/index.js";
+import { legacyId } from "../packages/dsh-memory/lib/legacy-migration.js";
 
 const execFile = promisify(execFileCallback);
 const git = async (root, args) => await execFile("/usr/bin/git", ["-C", root, ...args], { encoding: "utf8" });
@@ -70,10 +71,20 @@ assert.equal(searched.value.records[1].usage_count, 2);
 assert.equal(searched.value.records[0].score > 0, true);
 
 const archiveContext = await service.context({ scope: "archive", limit: 10 });
+const legacy = archiveContext.value.records.find((record) => record.path === "archive/legacy.md");
+assert.equal(legacy.id, legacyId("archive/legacy.md"));
+assert.equal(legacy.logical_id, legacyId("archive/legacy.md"));
+assert.equal(legacy.source_rollouts.length, 0);
 const long = archiveContext.value.records.find((record) => record.path === "archive/long.md");
 assert.equal(long.truncated, true);
 assert.equal(Buffer.byteLength(long.content, "utf8") <= 4096, true);
 assert.doesNotMatch(long.content, /�/);
+
+const legacySearch = await service.search({ query: "legacy", scope: "archive", limit: 1 });
+assert.equal(legacySearch.ok, true);
+assert.equal(legacySearch.value.results[0].id, legacyId("archive/legacy.md"));
+assert.match(legacySearch.value.results[0].content_hash, /^sha256:/);
+assert.equal(legacySearch.value.results[0].generation, 1);
 
 const invalidQuery = await service.context({ query: "" });
 assert.deepEqual(invalidQuery, { ok: false, error: { code: "context-invalid-request" } });
@@ -91,5 +102,22 @@ assert.equal(health.ok, true);
 assert.equal(health.value.summaryWithinBudget, false);
 assert.equal(health.value.summaryBytes, 12 * 1024 + 1);
 assert.equal(health.value.needsManualRecovery, true);
+
+await mkdir(join(root, ".sync", "runs"), { recursive: true });
+await writeFile(join(root, ".sync", "last-run.json"), JSON.stringify({
+  run_id: "20260824T010000Z-failed001",
+  status: "failed",
+  changed_paths: [],
+}));
+await writeFile(join(root, ".sync", "runs", "20260824T010001Z-skip0001.json"), JSON.stringify({
+  run_id: "20260824T010001Z-skip0001",
+  status: "skipped-retry",
+  error_code: "child-exit",
+  candidate_digest: "sha256:test",
+}));
+const statusResult = await service.status();
+assert.equal(statusResult.ok, true);
+assert.equal(statusResult.value.lastRun.status, "failed");
+assert.equal(statusResult.value.retrySuppressed.errorCode, "child-exit");
 
 console.log("dsh-memory context tests passed");

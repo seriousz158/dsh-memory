@@ -42,6 +42,7 @@ FINALIZE_FAILURE_NAME = "finalize-failure.json"
 LOCK_REJECTIONS_NAME = "lock-rejections.log"
 DEFAULT_STALE_SECONDS = 6 * 60 * 60
 MAX_FILE_BYTES = 1024 * 1024
+SUMMARY_BUDGET_BYTES = 12 * 1024
 MAX_ADDED_FILES = 50
 MAX_TOTAL_CHANGE_BYTES = 5 * 1024 * 1024
 METADATA_TYPES = {"preference", "fact", "decision", "procedure", "constraint", "observation"}
@@ -719,6 +720,8 @@ def validate_staging_limits(staging_fd, manifest, phase="staging-diff"):
             raise SyncError("binary-file")
         if "\x00" in text:
             raise SyncError("binary-file")
+        if relative == "summary.md" and len(content) > SUMMARY_BUDGET_BYTES:
+            raise SyncError("summary-too-large")
         record_id = parse_record_metadata(text, relative)
         if record_id is not None:
             if record_id in ids:

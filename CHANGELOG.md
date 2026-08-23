@@ -4,7 +4,30 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-24
+
+### Added
+
+- Host-side duplicate-id diagnostics now run against both the live baseline and
+  final staging tree, including the conflicting id and paths.
+- Failed stage-copy, child, diff, and apply phases write metadata-only journals;
+  retry backoff, failure sentinels, lock-rejection logs, and batch limits prevent
+  silent repeated Provider work.
+- Summary budget checks, archive-aware read scopes, cited content hashes, and
+  generation-aware usage metadata are now available without new UI.
+- The public `dsh-git-memory` bundle is synchronized from the private host/UI
+  workspaces for the v0.8.1 release.
+
+### Changed
+
+- `last-run.json` now represents only a real attempt; `skipped-retry` records
+  remain queryable in `.sync/runs/` without overwriting the last attempt.
+- Existing legacy ids remain stable logical usage ids; explicit future renames
+  can use usage aliases without resetting history.
+
 ### Fixed
+
+- Summary injection and consolidation rules enforce a 12 KiB budget.
 
 - LaunchAgent sync now discovers a local Node runtime when launchd provides a
   minimal `PATH`, so the pinned `#!/usr/bin/env node` DSH launcher does not

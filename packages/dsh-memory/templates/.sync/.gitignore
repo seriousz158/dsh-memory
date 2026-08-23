@@ -7,3 +7,4 @@ usage.lock/
 failure-sentinel.json
 finalize-failure.json
 lock-rejections.log
+pending-candidates.json

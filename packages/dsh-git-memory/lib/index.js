@@ -20,8 +20,8 @@ import {
   writeActiveRun,
 } from "./operation-lock.js";
 import { parseFrontMatter, isExpired, topicKey } from "./memory-metadata.js";
-import { legacyRecordSummary, migratedContent, scanLegacyRecords } from "./legacy-migration.js";
-import { formatCitation, readUsage, recordUsage, sortByUsage, usageMetadata } from "./memory-usage.js";
+import { legacyId, legacyRecordSummary, migratedContent, scanLegacyRecords } from "./legacy-migration.js";
+import { contentHashOf, formatCitation, readUsage, recordUsage, sortByUsage, usageMetadata } from "./memory-usage.js";
 import { SyncTransaction } from "./sync-transaction.js";
 
 const execFile = promisify(execFileCallback);
@@ -51,7 +51,8 @@ const MEMORY_SECTION = `长期记忆已开启（DPSK 专属仓库 ${DEFAULT_MEMO
 硬规则：只存证据化结论；禁存凭据（写入 [REDACTED]）；原始会话日志只读；宁缺毋滥。
 `;
 
-const SUMMARY_INJECT_MAX_BYTES = 16384;
+export const SUMMARY_BUDGET_BYTES = 12 * 1024;
+const SUMMARY_INJECT_MAX_BYTES = SUMMARY_BUDGET_BYTES;
 async function buildMemorySectionText() {
   let summary;
   try {
@@ -300,6 +301,10 @@ export class MemoryRepository {
       const targetDirty = (await this.git(["status", "--porcelain", "--", ...TARGETS])).stdout.trim().length > 0;
       const { legacyFileCount, pendingMigration } = await this.metadataStats(root);
       const lastRun = await this.readLastRun(root);
+      const retrySuppressed = await this.readRetrySuppressed(root);
+      const summaryBytes = await this.summaryBytes(root);
+      const failureSentinel = await this.readFailureSentinel(root);
+      const finalizeFailure = await this.readFinalizeFailure(root);
       const pendingPreview = (await this.validPendingPreviews(root))[0] ?? null;
       return success({
         empty: dataFileCount === 0,
@@ -310,6 +315,11 @@ export class MemoryRepository {
         legacyFileCount,
         pendingMigration,
         lastRun,
+        retrySuppressed,
+        summaryBytes,
+        summaryWithinBudget: summaryBytes <= SUMMARY_BUDGET_BYTES,
+        failureSentinel,
+        finalizeFailure,
         pendingPreview,
       });
     } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
@@ -342,6 +352,10 @@ export class MemoryRepository {
       const activeState = activeRun === null ? null : processAlive(activeRun.pid) ? "running" : "interrupted";
       const previews = await this.validPendingPreviews(root);
       const journalReadable = await this.journalIsReadable(root);
+      const retrySuppressed = await this.readRetrySuppressed(root);
+      const summaryBytes = await this.summaryBytes(root);
+      const failureSentinel = await this.readFailureSentinel(root);
+      const finalizeFailure = await this.readFinalizeFailure(root);
       const interruptedRun = activeState === "interrupted"
         ? activeRun
         : (await this.readLastRun(root))?.status === "interrupted" ? await this.readLastRun(root) : null;
@@ -350,6 +364,12 @@ export class MemoryRepository {
         rootSafe: true,
         gitAvailable: true,
         dataFileCount,
+        summaryBytes,
+        summaryBudgetBytes: SUMMARY_BUDGET_BYTES,
+        summaryWithinBudget: summaryBytes <= SUMMARY_BUDGET_BYTES,
+        failureSentinel,
+        finalizeFailure,
+        retrySuppressed,
         payloadDirty,
         operationLock: operationLock === null ? null : {
           operation: operationLock.operation ?? null,
@@ -363,7 +383,9 @@ export class MemoryRepository {
         pendingPreview: previews[0] ?? null,
         pendingPreviewCount: previews.length,
         journalReadable,
-        needsManualRecovery: payloadDirty || activeState === "interrupted" || interruptedRun !== null || !journalReadable,
+        needsManualRecovery: payloadDirty || activeState === "interrupted" || interruptedRun !== null || !journalReadable
+          || summaryBytes > SUMMARY_BUDGET_BYTES || (failureSentinel?.consecutive_failures ?? 0) >= 3
+          || finalizeFailure !== null,
       });
     } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
   }
@@ -382,6 +404,39 @@ export class MemoryRepository {
     } catch {
       return { legacyFileCount: 0, pendingMigration: false };
     }
+  }
+
+  async summaryBytes(root) {
+    const summary = await statOrUndefined(join(root, "summary.md"));
+    return summary?.isFile() ? summary.size : 0;
+  }
+
+  async readFailureSentinel(root) {
+    try {
+      const value = JSON.parse(await readFileSafe(join(root, ".sync", "failure-sentinel.json"), "utf8"));
+      return value?.consecutive_failures >= 3 ? value : null;
+    } catch { return null; }
+  }
+
+  async readFinalizeFailure(root) {
+    try {
+      return JSON.parse(await readFileSafe(join(root, ".sync", "finalize-failure.json"), "utf8"));
+    } catch { return null; }
+  }
+
+  async readRetrySuppressed(root) {
+    try {
+      const runIds = (await this.listRunIds(root)).sort().reverse();
+      if (runIds.length === 0) return null;
+      const latest = await this.readRun(root, runIds[0]);
+      if (latest?.status !== "skipped-retry") return null;
+      return {
+        runId: latest.run_id ?? runIds[0],
+        errorCode: latest.error_code ?? null,
+        candidateDigest: latest.candidate_digest ?? null,
+        retryAt: latest.retry_at ?? null,
+      };
+    } catch { return null; }
   }
 
   /** Return metadata-only descriptions of legacy Markdown records. */
@@ -609,8 +664,9 @@ export class MemoryRepository {
 
   async listRunIds(root) {
     try {
-      const raw = (await this.git(["ls-files", "-z", "--", ".sync/runs"])).stdout;
-      return raw.split("\0").filter(Boolean).map((path) => path.replace(/^\.sync\/runs\//, "").replace(/\.json$/, ""));
+      const entries = await (await import("node:fs/promises")).readdir(join(root, ".sync", "runs"), { withFileTypes: true });
+      return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map((entry) => entry.name.replace(/\.json$/, ""));
     } catch { return []; }
   }
 
@@ -712,20 +768,23 @@ export class MemoryRepository {
     }
   }
 
-  async collectSearchResults(root, query) {
+  async collectSearchResults(root, query, includeArchive = false, usage = undefined) {
     const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
     if (tokens.length === 0) throw memoryError("search-invalid-request");
     const results = [];
     const files = await this.payloadFiles(root);
     for (const file of files) {
       if (file === "summary.md" || !/\.md$/.test(file)) continue;
+      if (!includeArchive && file.startsWith("archive/")) continue;
       const content = await readFileSafe(join(root, file), "utf8").catch(() => "");
       let metadata = null;
       try { metadata = parseFrontMatter(content, file); } catch { continue; }
       if (metadata !== null && isExpired(metadata)) continue;
+      const recordId = metadata?.id ?? legacyId(file);
+      const usageInfo = usageMetadata(file, usage);
       const body = bodyWithoutFrontMatter(content);
       const searchable = [
-        metadata?.id ?? "",
+        recordId,
         metadata?.type ?? "",
         ...(metadata?.tags ?? []),
         metadata?.created_by ?? "",
@@ -735,7 +794,7 @@ export class MemoryRepository {
       let score = 0;
       for (const token of tokens) {
         if (searchable.includes(token)) score += 1;
-        if ((metadata?.id ?? "").toLowerCase().includes(token)) score += 3;
+        if (recordId.toLowerCase().includes(token)) score += 3;
         if ((metadata?.type ?? "").toLowerCase() === token) score += 2;
         if (body.toLowerCase().includes(token)) score += 1;
       }
@@ -746,11 +805,15 @@ export class MemoryRepository {
         results.push({
           path: file,
           score,
-          id: metadata?.id ?? null,
+          id: recordId,
           type: metadata?.type ?? null,
           updated_at: metadata?.updated_at ?? null,
+          content_hash: usageInfo.content_hash ?? contentHashOf(content),
+          generation: usageInfo.generation,
+          source_rollouts: metadata?.source_rollouts ?? [],
+          source_session_digest: metadata?.source_session_digest ?? null,
           snippet,
-          citation: formatCitation(file, metadata?.id ?? null),
+          citation: formatCitation(file, recordId),
         });
       }
     }
@@ -766,10 +829,14 @@ export class MemoryRepository {
       return failure("search-invalid-request");
     }
     const limit = Number.isInteger(request?.limit) && request.limit > 0 ? request.limit : 20;
+    const scope = request?.scope ?? "active";
+    if (!["active", "all", "archive"].includes(scope)) return failure("search-invalid-request");
     let root;
     try { root = await this.inspect(); } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
     try {
-      const results = await this.collectSearchResults(root, request.query);
+      const usage = await readUsage(root);
+      const results = (await this.collectSearchResults(root, request.query, scope !== "active", usage))
+        .filter((entry) => scope !== "archive" || entry.path.startsWith("archive/"));
       return success({ query: request.query, count: results.length, results: results.slice(0, limit) });
     } catch (error) {
       return failure(error?.memoryCode ?? "search-failed");
@@ -786,28 +853,35 @@ export class MemoryRepository {
     if (hasQuery && (typeof request.query !== "string" || request.query.trim().length === 0)) return failure("context-invalid-request");
     const limit = request?.limit === undefined ? 10 : request.limit;
     if (!Number.isInteger(limit) || limit < 1 || limit > 20) return failure("context-invalid-request");
+    const scope = request?.scope ?? "active";
+    if (!["active", "all", "archive"].includes(scope)) return failure("context-invalid-request");
     let root;
     try { root = await this.inspect(); } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
     try {
       const usage = await readUsage(root);
       let candidates;
       if (hasQuery) {
-        candidates = sortByUsage(await this.collectSearchResults(root, request.query), usage).slice(0, limit);
+        candidates = sortByUsage(await this.collectSearchResults(root, request.query, scope !== "active", usage), usage).slice(0, limit);
       } else {
         candidates = [];
         for (const file of await this.payloadFiles(root)) {
           if (file === "summary.md" || !/\.md$/.test(file)) continue;
+          if (scope === "active" && file.startsWith("archive/")) continue;
+          if (scope === "archive" && !file.startsWith("archive/")) continue;
           const content = await readFileSafe(join(root, file), "utf8").catch(() => "");
           let metadata = null;
           try { metadata = parseFrontMatter(content, file); } catch { continue; }
           if (metadata !== null && isExpired(metadata)) continue;
+          const recordId = metadata?.id ?? legacyId(file);
           candidates.push({
             path: file,
             score: 0,
-            id: metadata?.id ?? null,
+            id: recordId,
             type: metadata?.type ?? null,
             updated_at: metadata?.updated_at ?? null,
-            citation: formatCitation(file, metadata?.id ?? null),
+            source_rollouts: metadata?.source_rollouts ?? [],
+            source_session_digest: metadata?.source_session_digest ?? null,
+            citation: formatCitation(file, recordId),
           });
         }
         candidates = sortByUsage(candidates, usage).slice(0, limit);
@@ -828,6 +902,12 @@ export class MemoryRepository {
           citation: entry.citation ?? formatCitation(entry.path, entry.id ?? null),
           usage_count: metadata.usage_count,
           last_usage: metadata.last_usage || null,
+          logical_id: metadata.logical_id,
+          generation: metadata.generation,
+          content_hash: metadata.content_hash,
+          prior_usage_count: metadata.prior_usage_count,
+          source_rollouts: entry.source_rollouts ?? [],
+          source_session_digest: entry.source_session_digest ?? null,
           ...(hasQuery ? { score: entry.score } : {}),
         });
       }
@@ -1101,10 +1181,11 @@ export function apply(ctx, entry) {
     parameters: {
       query: { type: "string", required: true, description: "Search keywords." },
       limit: { type: "number", description: "Max results, default 20." },
+      scope: { type: "string", description: "active (default), all, or archive." },
     },
     output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: value }] },
     execute: async (args) => {
-      const result = await toolRepository.search({ query: String(args.query ?? ""), limit: args.limit });
+      const result = await toolRepository.search({ query: String(args.query ?? ""), limit: args.limit, scope: args.scope });
       return JSON.stringify(result.ok ? result.value : { error: result.error?.code ?? "search-failed" });
     },
     timeoutMs: 10000,
@@ -1115,12 +1196,14 @@ export function apply(ctx, entry) {
     parameters: {
       query: { type: "string", description: "Optional focus keywords." },
       limit: { type: "number", description: "1-20 records, default 10." },
+      scope: { type: "string", description: "active (default), all, or archive." },
     },
     output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: value }] },
     execute: async (args) => {
       const request = {};
       if (typeof args.query === "string" && args.query.trim().length > 0) request.query = args.query;
       if (args.limit !== undefined) request.limit = args.limit;
+      if (args.scope !== undefined) request.scope = args.scope;
       const result = await toolRepository.context(request);
       return JSON.stringify(result.ok ? result.value : { error: result.error?.code ?? "context-failed" });
     },
