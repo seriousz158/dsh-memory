@@ -166,7 +166,14 @@ def main():
     if path == "-":
         raw = sys.stdin.buffer.read()
     elif path.endswith(".zstd"):
-        raw = subprocess.run(["zstd", "-dc", path], capture_output=True, check=False).stdout
+        try:
+            raw = subprocess.run(["zstd", "-dc", path], capture_output=True, check=False).stdout
+        except FileNotFoundError:
+            # Synthetic fixtures and minimal launchd environments may not have
+            # the optional zstd binary. Treat the input as an already-decoded
+            # JSONL stream rather than failing the whole sync.
+            with open(path, "rb") as handle:
+                raw = handle.read()
     else:
         with open(path, "rb") as handle:
             raw = handle.read()

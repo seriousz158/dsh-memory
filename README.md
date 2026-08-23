@@ -75,6 +75,19 @@ v0.3 hardens the sync pipeline against concurrent runs and crashes:
 - Failed applies are journaled (`status: failed`, `error_code`) so every
   attempted run is auditable, and the journal commit never records transcripts,
   prompts, or credentials.
+- Duplicate ids are checked before staging and again after model edits; the
+  diagnostic includes both paths and never silently deduplicates. Lock
+  contention is written only to `.sync/lock-rejections.log`.
+- Child, staging, diff, and apply failures use a metadata-only retry key with
+  one-hour exponential backoff (up to 24 hours), a three-failure sentinel, and
+  `--retry-failed` escape hatch. Suppressed retries are kept in `.sync/runs/`
+  but never replace `last-run.json`.
+- Each real run delivers at most 10 idle sessions and 8 MiB of input. A capped
+  batch keeps a private cursor and leaves `.last-sync` unchanged until the
+  remaining candidates are processed, avoiding duplicate Provider calls.
+- Before the child starts, the host filters and redacts every candidate into a
+  temporary staging-only transcript. The model never receives live session
+  paths or the live memory-root path; transcripts are deleted before diff.
 
 `dsh-memory-sync --dry-run` remains read-only: it reports the candidate diff
 without touching the live root, the lock, the journal, Git, or the watermark.
@@ -146,29 +159,37 @@ CLI and host API use the same safe transaction path:
   `dsh-memory-migrate --dry-run|--apply` or the host API when migration is
   explicitly needed; the UI never exposes the filesystem root or runs Git.
 
-## v0.8: usage feedback, cited context, and read tools
+## v0.8.1: reliability, usage feedback, cited context, and read tools
 
 v0.8 adds a bounded startup snapshot and host-owned read tools without adding
 settings UI:
 
 - When memory is enabled, the current `summary.md` is injected into the
   system prompt as a bounded, explicitly untrusted `<summary_snapshot>` data
-  block (16 KiB maximum). An unreadable snapshot falls back to the static
+  block (12 KiB maximum). An unreadable snapshot falls back to the static
   memory instructions.
 
 - `memory.context({ query, limit })` returns bounded memory bodies with stable
   source citations (`[source: ... · id: ...]`), while preserving the existing
   `memory.search()` API.
 - Each context read updates metadata-only usage in `.sync/usage.json` with
-  `usage_count` and `last_usage`; the sidecar is private, atomic, and ignored
-  by Git. Existing repositories also receive a local `.git/info/exclude`
+  `logical_id`, `generation`, `content_hash`, `usage_count`, `last_usage`, and
+  decayed prior usage; the sidecar is private, atomic, and ignored by Git.
+  Existing repositories also receive a local `.git/info/exclude`
   entry without changing tracked memory files.
-- Query matches are selected deterministically, then ordered by usage count,
-  recent use, and path. Expired records are never returned.
+- Query matches are selected deterministically, then ordered by effective usage,
+  recent use, generation, logical id, and path. Active reads exclude archive;
+  callers may explicitly request `scope: "all"` or `scope: "archive"`.
+  Expired records are never returned.
 - The model can call `memory_search` (ranked snippets) and `memory_context`
   (bounded records ordered by usage) as read tools. They return JSON with
   relative-path citations; the host owns all filesystem access and the model
   never receives Git or sidecar paths.
+
+- Existing legacy records retain a deterministic `legacy-<path-hash>` logical id
+  for usage and citations without being rewritten. Content changes advance a
+  generation and decay the prior generation's score instead of transferring
+  its count verbatim.
 
 ## v0.7: browser end-to-end tests
 
@@ -192,7 +213,7 @@ behavior is verified, not just snapshot-checked:
 
 ## Compatibility
 
-`v0.8.0` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
+`v0.8.1` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
 tested and locally integrated with a consistently pinned `0.1.0-rc.7` graph:
 
 | Component | Supported version |
@@ -237,7 +258,7 @@ Clone the repository and install its reproducible development/runtime dependenci
 ```zsh
 git clone https://github.com/seriousz158/dsh-memory.git
 cd dsh-memory
-# Use the pinned runtime that this v0.8.0 integration was tested with.
+# Use the pinned runtime that this v0.8.1 integration was tested with.
 npm install --global @deepseek-ai/dsh@0.1.0-rc.7
 dsh --version
 npm ci --ignore-scripts

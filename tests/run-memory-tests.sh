@@ -17,6 +17,7 @@ node tests/test_dsh_memory_usage.mjs
 node tests/test_dsh_memory_context.mjs
 node tests/test_dsh_memory_tools.mjs
 node tests/test_dsh_memory_marketplace.mjs
+python3 tests/test_dsh_memory_sync_failures.py
 node tests/test_dsh_memory_paths.mjs
 node tests/test_dsh_memory_preview.mjs
 node tests/test_dsh_memory_redaction.mjs
@@ -28,6 +29,7 @@ zsh tests/test_dsh_memory_sync_disabled.sh
 zsh tests/test_dsh_memory_sync_env.sh
 zsh tests/test_dsh_memory_sync_dry_run.sh
 zsh tests/test_dsh_memory_sync_lock.sh
+zsh tests/test_dsh_memory_sync_batch.sh
 zsh tests/test_dsh_memory_sync_preview.sh
 zsh tests/test_dsh_memory_sync_no_change.sh
 zsh tests/test_dsh_memory_backup.sh

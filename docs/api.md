@@ -401,13 +401,14 @@ Removes a pending preview without applying it:
 
 Failures use `preview-invalid-request` or `preview-not-found`.
 
-### `memory.search({ query, limit })` (v0.4)
+### `memory.search({ query, limit, scope })` (v0.4/v0.8.1)
 
-Local full-text search over the payload records (`handbook/`, `rollouts/`,
-`archive/`). The query is tokenized on non-letter/number boundaries; each
-record is scored by front matter fields (id matches weigh most) and body
+Local full-text search over active payload records (`handbook/`, `rollouts/`)
+by default. Pass `scope: "all"` or `scope: "archive"` to include archived
+records explicitly. The query is tokenized on non-letter/number boundaries;
+each record is scored by front matter fields (id matches weigh most) and body
 text. Expired records are excluded. Returns matches sorted by score with a
-short body snippet:
+short body snippet and provenance metadata:
 
 ```json
 {
@@ -422,6 +423,9 @@ short body snippet:
         "id": "project/codegen",
         "type": "decision",
         "updated_at": "2026-08-10",
+        "content_hash": "sha256:…",
+        "generation": 1,
+        "source_rollouts": ["rollouts/2026-08-10-session.md"],
         "snippet": "We chose TypeScript for the codegen pipeline…",
         "citation": "[source: handbook/project.md · id: project/codegen]"
       }
@@ -430,15 +434,16 @@ short body snippet:
 }
 ```
 
-`limit` defaults to 20. Failures use `search-invalid-request`,
+`scope` defaults to `active`; `limit` defaults to 20. Legacy records use their
+deterministic `legacy-<path-hash>` id without rewriting the file. Failures use `search-invalid-request`,
 `repo-unavailable`, or `search-failed`.
 
-### `memory.context({ query, limit })` (v0.8)
+### `memory.context({ query, limit, scope })` (v0.8.1)
 
 Host-owned read path for a bounded memory context. `query` is optional; when
 omitted, records are ordered by usage feedback. When present, deterministic
-full-text matches are selected first and then ordered by `usage_count`,
-`last_usage`, and path. Expired records are excluded.
+full-text matches are selected first and then ordered by effective usage,
+`last_usage`, generation, logical id, and path. Expired records are excluded.
 
 ```json
 {
@@ -456,6 +461,10 @@ full-text matches are selected first and then ordered by `usage_count`,
         "citation": "[source: handbook/project.md · id: project/codegen]",
         "usage_count": 3,
         "last_usage": "2026-08-21T02:00:00.000Z",
+        "logical_id": "project/codegen",
+        "generation": 1,
+        "content_hash": "sha256:…",
+        "source_rollouts": [],
         "score": 5
       }
     ]
@@ -463,7 +472,9 @@ full-text matches are selected first and then ordered by `usage_count`,
 }
 ```
 
-`limit` defaults to 10 and is restricted to 1–20. Each returned body is
+`scope` defaults to `active`, which excludes `archive/`; use `all` or
+`archive` for explicit broader reads. `limit` defaults to 10 and is restricted
+to 1–20. Each returned body is
 bounded to 4 KiB. A successful context read increments metadata-only usage in
 `.sync/usage.json`; the sidecar is atomically written with owner-only
 permissions and is excluded from Git. It contains no memory body, transcript,
@@ -477,7 +488,7 @@ The host registers two read-path tools when the `tools` service is available:
 
 - `memory_search({ query, limit })` returns the same ranked snippets and
   citations as `memory.search()`.
-- `memory_context({ query?, limit? })` returns bounded records and updates
+- `memory_context({ query?, limit?, scope? })` returns bounded records and updates
   only the metadata-only usage sidecar used for deterministic ordering.
 
 Both tools return a JSON string to the model. They do not expose the memory
@@ -495,6 +506,10 @@ Provenance fields (all optional, completed as `null` by the host when absent):
 | --- | --- | --- |
 | `source_hash` | string | stable hash of the source that produced the record |
 | `created_by` | string | agent or process that created the record |
+| `content_hash` | string | content identity used for usage generations |
+| `source_session_digest` | string | redacted source-session identity |
+| `supersedes` | string | prior logical record replaced by this record |
+| `conflicts_with` | string | record kept as an explicit conflict |
 | `review_after` | date | suggested review date (`YYYY-MM-DD`) |
 | `expires_at` | date | validity deadline (`YYYY-MM-DD`) |
 

@@ -22,7 +22,10 @@ DSH_HOME="$TEST_DSH_HOME" DSH_MEMORY_ROOT="$TEST_MEMORY_ROOT" "$INITIALIZER" >/d
 # Exercise the incremental path with one session that is newer than the
 # watermark but has been idle for more than one hour.
 touch -t 200001010000 "$TEST_MEMORY_ROOT/.last-sync"
-: > "$TEST_DSH_HOME/sessions/session.jsonl.zstd"
+cat > "$TEST_DSH_HOME/sessions/session.jsonl.zstd" <<'EOF'
+{"type":"session","id":"synthetic-session","cwd":"/workspace/example/project","agentPreset":"headless"}
+{"type":"user/message","data":{"content":[{"type":"text","text":"credential sk-test123 and stable decision"}]}}
+EOF
 touch -t 200001010001 "$TEST_DSH_HOME/sessions/session.jsonl.zstd"
 
 cat > "$TEST_INTEGRATION/dsh-memory-init" <<'EOF'
@@ -40,6 +43,16 @@ set -euo pipefail
 grep -q -- '^- id: session-persistence-jsonl$' "$4"
 grep -q -- 'headless-sessions' "$4"
 [[ "$4" != "$DSH_HOME/sessions" ]]
+print -r -- "$5" > "$HOME/prompt.txt"
+[[ "$5" == *"summary.md"*"12 KiB"* ]]
+[[ "$5" == *"candidates.txt"* ]]
+[[ "$5" == *"脱敏"* ]]
+[[ "$5" != *"$DSH_HOME/sessions"* ]]
+[[ "$5" != *"$DSH_MEMORY_ROOT"* ]]
+INPUT_FILE="$(find . -path './.dsh-memory-inputs/*.md' -type f -print -quit)"
+[[ -n "$INPUT_FILE" && -f "$INPUT_FILE" ]]
+grep -q -- '\[REDACTED\]' "$INPUT_FILE"
+! grep -q -- 'sk-test123' "$INPUT_FILE"
 PRIVATE_SESSION_ROOT="$(/usr/bin/awk '/^[[:space:]]*root:/{print $2; exit}' "$4")"
 mkdir -p "$PRIVATE_SESSION_ROOT"
 : > "$PRIVATE_SESSION_ROOT/session.jsonl.zstd"
@@ -71,6 +84,7 @@ env \
 PRIVATE_SESSION_ROOT="$(cat "$TEST_HOME/private-session-root.txt")"
 [[ "$PRIVATE_SESSION_ROOT" != "$TEST_DSH_HOME/sessions" ]]
 [[ ! -e "$PRIVATE_SESSION_ROOT" ]]
+grep -q -- '脱敏' "$TEST_HOME/prompt.txt"
 
 for allowed_name in \
   HOME DSH_HOME DSH_MEMORY_ROOT PATH TMPDIR LANG LC_SYNTHETIC \

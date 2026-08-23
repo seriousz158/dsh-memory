@@ -162,7 +162,7 @@ export function parseFrontMatter(content, relativePath) {
   if (raw.source_rollouts !== undefined && !validSourceRollouts(raw.source_rollouts)) {
     throw new MetadataError("invalid-metadata", `${relativePath} has out-of-tree source_rollouts`);
   }
-  for (const field of ["source_hash", "created_by"]) {
+  for (const field of ["source_hash", "created_by", "content_hash", "source_session_digest", "supersedes", "conflicts_with"]) {
     if (raw[field] !== undefined && (typeof raw[field] !== "string" || raw[field].length === 0 || raw[field].length > 128)) {
       throw new MetadataError("invalid-metadata", `${relativePath} has an invalid ${field}`);
     }
@@ -183,7 +183,11 @@ export function parseFrontMatter(content, relativePath) {
     tags: raw.tags ?? [],
     source_rollouts: raw.source_rollouts ?? [],
     source_hash: raw.source_hash ?? null,
+    content_hash: raw.content_hash ?? null,
+    source_session_digest: raw.source_session_digest ?? null,
     created_by: raw.created_by ?? null,
+    supersedes: raw.supersedes ?? null,
+    conflicts_with: raw.conflicts_with ?? null,
     review_after: raw.review_after ?? null,
     expires_at: raw.expires_at ?? null,
   };
@@ -193,7 +197,11 @@ export function parseFrontMatter(content, relativePath) {
 export function renderFrontMatter(metadata) {
   const lines = ["---", `schema_version: ${SCHEMA_VERSION}`, `id: ${metadata.id}`, `type: ${metadata.type}`, `status: ${metadata.status}`, `confidence: ${metadata.confidence}`, `created_at: ${metadata.created_at}`, `updated_at: ${metadata.updated_at}`];
   if (metadata.source_hash !== undefined && metadata.source_hash !== null) lines.push(`source_hash: ${metadata.source_hash}`);
+  if (metadata.content_hash !== undefined && metadata.content_hash !== null) lines.push(`content_hash: ${metadata.content_hash}`);
+  if (metadata.source_session_digest !== undefined && metadata.source_session_digest !== null) lines.push(`source_session_digest: ${metadata.source_session_digest}`);
   if (metadata.created_by !== undefined && metadata.created_by !== null) lines.push(`created_by: ${metadata.created_by}`);
+  if (metadata.supersedes !== undefined && metadata.supersedes !== null) lines.push(`supersedes: ${metadata.supersedes}`);
+  if (metadata.conflicts_with !== undefined && metadata.conflicts_with !== null) lines.push(`conflicts_with: ${metadata.conflicts_with}`);
   if (metadata.review_after !== undefined && metadata.review_after !== null) lines.push(`review_after: ${metadata.review_after}`);
   if (metadata.expires_at !== undefined && metadata.expires_at !== null) lines.push(`expires_at: ${metadata.expires_at}`);
   if ((metadata.tags ?? []).length > 0) {
