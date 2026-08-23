@@ -37,6 +37,9 @@ DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 RUN_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$")
 LOCK_NAME = "operation.lock"
 ACTIVE_NAME = "active-run.json"
+FAILURE_SENTINEL_NAME = "failure-sentinel.json"
+FINALIZE_FAILURE_NAME = "finalize-failure.json"
+LOCK_REJECTIONS_NAME = "lock-rejections.log"
 DEFAULT_STALE_SECONDS = 6 * 60 * 60
 MAX_FILE_BYTES = 1024 * 1024
 MAX_ADDED_FILES = 50
@@ -49,9 +52,10 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class SyncError(Exception):
-    def __init__(self, code):
+    def __init__(self, code, details=None):
         super().__init__(code)
         self.code = code
+        self.details = details if isinstance(details, dict) else {}
 
 
 def emit(value):
@@ -285,6 +289,10 @@ def prepare_preview(root, preview_id):
                     copy_relative(staging_fd, relative, file_fd)
                 finally:
                     os.close(file_fd)
+            # Detect pre-existing live-root record collisions before creating
+            # a baseline manifest. This is diagnostic-only: no record is
+            # silently selected or removed.
+            scan_duplicate_ids(root_fd, walk_live_tree(root_fd), "baseline")
         finally:
             os.close(staging_fd)
         head_sha = None
@@ -651,7 +659,42 @@ def resolve_topic_conflict(records, now=None):
     )[0]
 
 
-def validate_staging_limits(staging_fd, manifest):
+def duplicate_error(record_id, first_path, second_path, phase):
+    return SyncError("duplicate-id", {
+        "phase": phase,
+        "id": record_id,
+        "first_path": first_path,
+        "second_path": second_path,
+    })
+
+
+def scan_duplicate_ids(directory_fd, file_iterator, phase):
+    ids = {}
+    for relative, _entry_stat in file_iterator:
+        if not relative.endswith(".md") or not path_is_payload(relative):
+            continue
+        file_fd = open_regular(directory_fd, relative)
+        try:
+            content = b""
+            while True:
+                chunk = os.read(file_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                content += chunk
+        finally:
+            os.close(file_fd)
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        record_id = parse_record_metadata(text, relative)
+        if record_id is not None:
+            if record_id in ids:
+                raise duplicate_error(record_id, ids[record_id], relative, phase)
+            ids[record_id] = relative
+
+
+def validate_staging_limits(staging_fd, manifest, phase="staging-diff"):
     baseline = {entry["path"]: entry for entry in manifest.get("entries", [])}
     observed = {}
     ids = {}
@@ -679,7 +722,7 @@ def validate_staging_limits(staging_fd, manifest):
         record_id = parse_record_metadata(text, relative)
         if record_id is not None:
             if record_id in ids:
-                raise SyncError("duplicate-id")
+                raise duplicate_error(record_id, ids[record_id], relative, phase)
             ids[record_id] = relative
         observed[relative] = {"size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
     added = [path for path in observed if path not in baseline and path_is_payload(path)]
@@ -808,6 +851,10 @@ def stage_copy(root, staging, manifest_path):
                     copy_relative(staging_fd, relative, file_fd)
                 finally:
                     os.close(file_fd)
+            # Detect pre-existing live-root record collisions before creating
+            # a baseline manifest. This is diagnostic-only: no record is
+            # silently selected or removed.
+            scan_duplicate_ids(root_fd, walk_live_tree(root_fd), "baseline")
         finally:
             os.close(staging_fd)
         head_sha = None
@@ -1107,11 +1154,134 @@ def write_journal_file(root_fd, relative, data, mode):
             os.close(fd)
 
 
+def append_sync_log(root, name, line):
+    root_fd = open_root(root)
+    try:
+        sync_fd = open_sync_directory(root_fd, create=True)
+        try:
+            descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | NOFOLLOW, 0o600, dir_fd=sync_fd)
+            try:
+                os.write(descriptor, (line.rstrip("\n") + "\n").encode("utf-8"))
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(sync_fd)
+    finally:
+        os.close(root_fd)
+    return {"written": True, "name": name}
+
+
+def read_run_records(root):
+    try:
+        names = sorted(os.listdir(os.path.join(root, ".sync", "runs")))
+    except OSError:
+        return []
+    records = []
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            records.append(json.loads(read_text(os.path.join(root, ".sync", "runs", name))))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+    return records
+
+
+def retry_check(root, candidate_digest, policy_version, cooldown_seconds=3600, now=None):
+    if not candidate_digest or not policy_version:
+        return {"suppressed": False}
+    current = time.time() if now is None else now
+    matching = [record for record in read_run_records(root)
+                if record.get("candidate_digest") == candidate_digest
+                and record.get("sync_policy_version") == policy_version
+                and record.get("status") == "failed"]
+    if not matching:
+        return {"suppressed": False}
+    latest = sorted(matching, key=lambda record: record.get("finished_at") or "", reverse=True)[0]
+    finished = latest.get("finished_at")
+    try:
+        failed_at = calendar.timegm(time.strptime(finished, "%Y-%m-%dT%H:%M:%SZ"))
+    except (TypeError, ValueError, OverflowError):
+        return {"suppressed": False}
+    retry_at = failed_at + max(0, cooldown_seconds)
+    if current < retry_at:
+        return {
+            "suppressed": True,
+            "error_code": latest.get("error_code"),
+            "retry_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(retry_at)),
+            "run_id": latest.get("run_id"),
+        }
+    return {"suppressed": False}
+
+
+def write_failure_sentinel(root, error_code, run_id=None, candidate_digest=None, phase=None):
+    root_fd = open_root(root)
+    try:
+        sync_fd = open_sync_directory(root_fd, create=True)
+        try:
+            existing = read_json_at(sync_fd, FAILURE_SENTINEL_NAME)
+        finally:
+            os.close(sync_fd)
+        previous_count = existing.get("consecutive_failures", 0) if isinstance(existing, dict) else 0
+        same_error = isinstance(existing, dict) and existing.get("error_code") == error_code and existing.get("candidate_digest") == candidate_digest
+        record = {
+            "schema_version": 1,
+            "error_code": error_code,
+            "consecutive_failures": previous_count + 1 if same_error else 1,
+            "first_failed_at": existing.get("first_failed_at") if same_error else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "last_failed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "run_id": run_id,
+            "candidate_digest": candidate_digest,
+            "phase": phase,
+        }
+        write_journal_file(root_fd, f".sync/{FAILURE_SENTINEL_NAME}", json.dumps(record, separators=(",", ":")) + "\n", 0o600)
+        return record
+    finally:
+        os.close(root_fd)
+
+
+def clear_failure_sentinel(root):
+    root_fd = open_root(root)
+    try:
+        sync_fd = open_sync_directory(root_fd, create=False)
+        if sync_fd is None:
+            return {"cleared": False}
+        try:
+            try:
+                os.unlink(FAILURE_SENTINEL_NAME, dir_fd=sync_fd)
+                return {"cleared": True}
+            except FileNotFoundError:
+                return {"cleared": False}
+        finally:
+            os.close(sync_fd)
+    finally:
+        os.close(root_fd)
+
+
+def write_finalize_failure(root, run_id=None, candidate_digest=None):
+    root_fd = open_root(root)
+    try:
+        record = {
+            "schema_version": 1,
+            "error_code": "finalize-failed",
+            "run_id": run_id,
+            "candidate_digest": candidate_digest,
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        write_journal_file(root_fd, f".sync/{FINALIZE_FAILURE_NAME}", json.dumps(record, separators=(",", ":")) + "\n", 0o600)
+        return record
+    finally:
+        os.close(root_fd)
+
+
 def journal_entry(root_fd, run_id, operation, status, started_at, finished_at,
                   candidate_sessions=0, processed_sessions=0, skipped_sessions=0,
                   changed_paths=None, recovery_commit=None, apply_commit=None,
                   error_code=None, phase=None, staging_digest=None,
-                  duration_ms=None, rejected_file_count=0, changed_path_count=None):
+                  duration_ms=None, rejected_file_count=0, changed_path_count=None,
+                  candidate_digest=None, sync_policy_version=None, update_last_run=True,
+                  error_details=None):
     record = {
         "schema_version": 1,
         "run_id": run_id,
@@ -1128,17 +1298,22 @@ def journal_entry(root_fd, run_id, operation, status, started_at, finished_at,
         "error_code": error_code,
         "phase": phase,
         "staging_digest": staging_digest,
+        "candidate_digest": candidate_digest,
+        "sync_policy_version": sync_policy_version,
+        "error_details": error_details if isinstance(error_details, dict) else None,
         "duration_ms": duration_ms,
         "rejected_file_count": rejected_file_count,
         "changed_path_count": changed_path_count if changed_path_count is not None else len(changed_paths or []),
     }
     write_journal_file(root_fd, f".sync/runs/{run_id}.json", json.dumps(record, separators=(",", ":")) + "\n", 0o600)
-    last = {key: record[key] for key in (
-        "run_id", "operation", "status", "started_at", "finished_at",
-        "changed_paths", "recovery_commit", "apply_commit", "error_code", "phase",
-        "staging_digest", "duration_ms", "rejected_file_count", "changed_path_count",
-    )}
-    write_journal_file(root_fd, ".sync/last-run.json", json.dumps(last, separators=(",", ":")) + "\n", 0o600)
+    if update_last_run:
+        last = {key: record[key] for key in (
+            "run_id", "operation", "status", "started_at", "finished_at",
+            "changed_paths", "recovery_commit", "apply_commit", "error_code", "phase",
+            "staging_digest", "candidate_digest", "sync_policy_version", "duration_ms",
+            "rejected_file_count", "changed_path_count",
+        )}
+        write_journal_file(root_fd, ".sync/last-run.json", json.dumps(last, separators=(",", ":")) + "\n", 0o600)
     return record
 
 
@@ -1153,7 +1328,9 @@ def finalize(root, run_id, record, last_sync_ts):
                       record["skipped_sessions"], record["changed_paths"], record["recovery_commit"],
                       record["apply_commit"], record["error_code"], record.get("phase"),
                       record.get("staging_digest"), record.get("duration_ms"),
-                      record.get("rejected_file_count", 0), record.get("changed_path_count"))
+                      record.get("rejected_file_count", 0), record.get("changed_path_count"),
+                      record.get("candidate_digest"), record.get("sync_policy_version"),
+                      error_details=record.get("error_details"))
     finally:
         os.close(root_fd)
     git(root, ["add", "--", ".sync", ".last-sync"])
@@ -1167,7 +1344,8 @@ def main():
         "stage-copy", "verify-staging", "diff", "mirror-payload", "apply", "journal", "finalize",
         "acquire-lock", "release-lock", "write-active", "clear-active",
         "prepare-preview", "write-preview", "read-preview", "remove-preview", "recover-active",
-        "apply-preview", "list-previews",
+        "apply-preview", "list-previews", "lock-rejection", "retry-check",
+        "write-failure-sentinel", "clear-failure-sentinel", "write-finalize-failure",
     ))
     parser.add_argument("--root")
     parser.add_argument("--staging")
@@ -1191,6 +1369,13 @@ def main():
     parser.add_argument("--staging-digest", dest="staging_digest")
     parser.add_argument("--duration-ms", dest="duration_ms", type=int)
     parser.add_argument("--rejected-file-count", dest="rejected_file_count", type=int, default=0)
+    parser.add_argument("--candidate-digest", dest="candidate_digest")
+    parser.add_argument("--sync-policy-version", dest="sync_policy_version")
+    parser.add_argument("--cooldown-seconds", dest="cooldown_seconds", type=int, default=3600)
+    parser.add_argument("--suppress-last-run", dest="suppress_last_run", action="store_true")
+    parser.add_argument("--error-id", dest="error_id")
+    parser.add_argument("--first-path", dest="first_path")
+    parser.add_argument("--second-path", dest="second_path")
     args = parser.parse_args()
     if args.root is not None and not os.path.isabs(args.root):
         raise SyncError("sync-failed")
@@ -1227,6 +1412,28 @@ def main():
         return result if result.get("ok") is not None else {"ok": True, "value": result}
     if args.operation == "list-previews":
         return {"ok": True, "value": {"previews": list_previews(args.root)}}
+    if args.operation == "lock-rejection":
+        return {"ok": True, "value": append_sync_log(
+            args.root, LOCK_REJECTIONS_NAME, json.dumps({
+                "schema_version": 1,
+                "run_id": args.run_id,
+                "operation": args.operation_name or "sync",
+                "error_code": args.error_code or "operation-in-progress",
+                "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }, separators=(",", ":")),
+        )}
+    if args.operation == "retry-check":
+        return {"ok": True, "value": retry_check(
+            args.root, args.candidate_digest, args.sync_policy_version, args.cooldown_seconds,
+        )}
+    if args.operation == "write-failure-sentinel":
+        return {"ok": True, "value": write_failure_sentinel(
+            args.root, args.error_code or "sync-failed", args.run_id, args.candidate_digest, args.phase,
+        )}
+    if args.operation == "clear-failure-sentinel":
+        return {"ok": True, "value": clear_failure_sentinel(args.root)}
+    if args.operation == "write-finalize-failure":
+        return {"ok": True, "value": write_finalize_failure(args.root, args.run_id, args.candidate_digest)}
     if args.operation == "recover-active":
         return {"ok": True, "value": recover_active(args.root)}
     if args.operation == "stage-copy":
@@ -1248,7 +1455,12 @@ def main():
                 args.candidate_sessions, args.processed_sessions, args.skipped_sessions,
                 args.changed_paths.split(",") if args.changed_paths else [],
                 args.recovery_commit, args.apply_commit, args.error_code, args.phase,
-                args.staging_digest, args.duration_ms, args.rejected_file_count)}
+                args.staging_digest, args.duration_ms, args.rejected_file_count,
+                candidate_digest=args.candidate_digest, sync_policy_version=args.sync_policy_version,
+                update_last_run=not args.suppress_last_run,
+                error_details={key: value for key, value in {
+                    "id": args.error_id, "first_path": args.first_path, "second_path": args.second_path,
+                }.items() if value is not None})}
         finally:
             os.close(root_fd)
     if args.operation == "finalize":
@@ -1261,8 +1473,12 @@ def main():
                   "changed_paths": args.changed_paths.split(",") if args.changed_paths else [],
                   "recovery_commit": args.recovery_commit, "apply_commit": args.apply_commit,
                   "error_code": args.error_code, "phase": args.phase,
-                  "staging_digest": args.staging_digest, "duration_ms": args.duration_ms,
-                  "rejected_file_count": args.rejected_file_count}
+                  "staging_digest": args.staging_digest, "candidate_digest": args.candidate_digest,
+                  "sync_policy_version": args.sync_policy_version, "duration_ms": args.duration_ms,
+                  "rejected_file_count": args.rejected_file_count,
+                  "error_details": {key: value for key, value in {
+                      "id": args.error_id, "first_path": args.first_path, "second_path": args.second_path,
+                  }.items() if value is not None}}
         return {"ok": True, "value": {"journal_commit": finalize(args.root, args.run_id, record, args.last_sync)}}
     raise SyncError("sync-failed")
 
@@ -1271,7 +1487,7 @@ if __name__ == "__main__":
     try:
         emit(main())
     except SyncError as error:
-        emit({"ok": False, "error": {"code": error.code}})
+        emit({"ok": False, "error": {"code": error.code, **error.details}})
         sys.exit(1)
     except OSError:
         emit({"ok": False, "error": {"code": "sync-failed"}})

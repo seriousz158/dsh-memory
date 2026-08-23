@@ -17,6 +17,7 @@ node tests/test_dsh_memory_usage.mjs
 node tests/test_dsh_memory_context.mjs
 node tests/test_dsh_memory_tools.mjs
 node tests/test_dsh_memory_marketplace.mjs
+python3 tests/test_dsh_memory_sync_failures.py
 node tests/test_dsh_memory_paths.mjs
 node tests/test_dsh_memory_preview.mjs
 node tests/test_dsh_memory_redaction.mjs

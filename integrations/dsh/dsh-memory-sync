@@ -21,18 +21,26 @@ DSH_MEMORY_ROOT="${DSH_MEMORY_ROOT:-$DSH_HOME/storages/memory}"
 MARKER="$DSH_MEMORY_ROOT/.last-sync"
 DSH_BIN="${DSH_BIN:-dsh}"
 DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
+SYNC_POLICY_VERSION="${DSH_MEMORY_SYNC_POLICY_VERSION:-v0.8.1}"
+MAX_CANDIDATE_SESSIONS="${DSH_MEMORY_MAX_CANDIDATE_SESSIONS:-10}"
+MAX_CANDIDATE_BYTES="${DSH_MEMORY_MAX_CANDIDATE_BYTES:-8388608}"
+RETRY_COOLDOWN_SECONDS="${DSH_MEMORY_RETRY_COOLDOWN_SECONDS:-3600}"
 # These are host-lifecycle metrics, never numbers inferred from the model's
 # natural-language report. Candidates pass the watermark and one-hour idle
 # guards; a successful headless invocation processes every candidate it receives.
 CANDIDATE_SESSIONS=0
 PROCESSED_SESSIONS=0
 SKIPPED_SESSIONS=0
+CANDIDATE_BYTES=0
+CANDIDATE_DIGEST=""
+CANDIDATE_MANIFEST_TMP=""
 
 DRY_RUN=0
 PREVIEW_MODE=0
 APPLY_PREVIEW=""
 DISCARD_PREVIEW=""
 JSON_OUTPUT=0
+RETRY_FAILED=0
 PREVIEW_ID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -54,6 +62,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --json) JSON_OUTPUT=1; shift ;;
+    --retry-failed) RETRY_FAILED=1; shift ;;
     *) print -u2 -- "dsh-memory-sync: unexpected argument: $1"; exit 2 ;;
   esac
 done
@@ -138,6 +147,50 @@ sync_apply() {
     "PATH=${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
     "TMPDIR=${TMPDIR:-/tmp}" \
     "$PYTHON_BIN" "$SYNC_APPLY" "$@"
+}
+
+json_error_code() {
+  printf '%s' "$1" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("error", {}).get("code", "sync-failed"))' 2>/dev/null || print -- "sync-failed"
+}
+
+write_failure_record() {
+  local error_code="$1"
+  local phase="$2"
+  local error_payload="${3:-}"
+  local error_id=""
+  local first_path=""
+  local second_path=""
+  typeset -a detail_args
+  detail_args=()
+  if [[ -n "$error_payload" ]]; then
+    error_id="$(printf '%s' "$error_payload" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("error", {}).get("id", ""))' 2>/dev/null || true)"
+    first_path="$(printf '%s' "$error_payload" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("error", {}).get("first_path", ""))' 2>/dev/null || true)"
+    second_path="$(printf '%s' "$error_payload" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("error", {}).get("second_path", ""))' 2>/dev/null || true)"
+    [[ -n "$error_id" ]] && detail_args+=(--error-id "$error_id")
+    [[ -n "$first_path" ]] && detail_args+=(--first-path "$first_path")
+    [[ -n "$second_path" ]] && detail_args+=(--second-path "$second_path")
+  fi
+  sync_apply journal --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" \
+    --operation-name sync --status failed --started-at "$STARTED_AT" \
+    --candidate-sessions "$CANDIDATE_SESSIONS" --processed-sessions "$PROCESSED_SESSIONS" \
+    --skipped-sessions "$SKIPPED_SESSIONS" --changed-paths "${changed_paths:-}" \
+    --error-code "$error_code" --phase "$phase" --candidate-digest "$CANDIDATE_DIGEST" \
+    --sync-policy-version "$SYNC_POLICY_VERSION" "${detail_args[@]}" >/dev/null 2>&1 || true
+  sync_apply write-failure-sentinel --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" \
+    --error-code "$error_code" --phase "$phase" --candidate-digest "$CANDIDATE_DIGEST" \
+    >/dev/null 2>&1 || true
+}
+
+candidate_digest() {
+  local file
+  if [[ "$#" -eq 0 ]]; then
+    print -r -- "sha256:$(printf '' | shasum -a 256 | awk '{print $1}')"
+    return
+  fi
+  for file in "$@"; do
+    printf '%s  ' "$file"
+    shasum -a 256 -- "$file" | awk '{print $1}'
+  done | shasum -a 256 | awk '{print "sha256:" $1}'
 }
 
 memory_sync_disabled() {
@@ -226,10 +279,25 @@ if [[ -n "$DISCARD_PREVIEW" ]]; then
 fi
 
 # Zero-cost guard: nothing new since the last sync exits before any DSH run.
+typeset -a CANDIDATE_FILES
+CANDIDATE_FILES=()
 if [[ -f "$MARKER" ]]; then
-  NEW=$(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$MARKER" ! -newermt '-1 hour' 2>/dev/null | wc -l | tr -d ' ')
-  CANDIDATE_SESSIONS="$NEW"
-  if [[ "$NEW" == "0" ]]; then
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] && CANDIDATE_FILES+=("$candidate")
+  done < <(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$MARKER" ! -newermt '-1 hour' -print 2>/dev/null | sort)
+  typeset -a LIMITED_CANDIDATES
+  LIMITED_CANDIDATES=()
+  for candidate in "${CANDIDATE_FILES[@]}"; do
+    local_size="$(stat -f %z -- "$candidate" 2>/dev/null || print 0)"
+    if (( ${#LIMITED_CANDIDATES} >= MAX_CANDIDATE_SESSIONS )); then break; fi
+    if (( CANDIDATE_BYTES + local_size > MAX_CANDIDATE_BYTES && ${#LIMITED_CANDIDATES} > 0 )); then break; fi
+    LIMITED_CANDIDATES+=("$candidate")
+    CANDIDATE_BYTES=$((CANDIDATE_BYTES + local_size))
+  done
+  CANDIDATE_FILES=("${LIMITED_CANDIDATES[@]}")
+  CANDIDATE_SESSIONS=${#CANDIDATE_FILES}
+  CANDIDATE_DIGEST="$(candidate_digest "${CANDIDATE_FILES[@]}")"
+  if [[ "$CANDIDATE_SESSIONS" == "0" ]]; then
     if [[ "$DRY_RUN" == "1" ]]; then
       if [[ "$JSON_OUTPUT" == "1" ]]; then
         printf '{"ok":true,"dryRun":true,"candidateSessions":0,"changedPaths":[],"message":"no new idle session logs"}\n'
@@ -241,7 +309,7 @@ if [[ -f "$MARKER" ]]; then
     fi
     exit 0
   fi
-  progress "$NEW new idle session log(s), starting headless consolidation…"
+  progress "$CANDIDATE_SESSIONS new idle session log(s), starting headless consolidation…"
 else
   progress "first run — marker will be created, historical sessions skipped."
 fi
@@ -258,6 +326,10 @@ fi
 START_TS=$(date +%s)
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-$(/usr/bin/uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-' | cut -c1-8)
 STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+CANDIDATE_MANIFEST_TMP="${TMPDIR:-/tmp}/dsh-memory-candidates-$$.txt"
+if [[ "${#CANDIDATE_FILES}" -gt 0 ]]; then
+  print -rl -- "${CANDIDATE_FILES[@]}" > "$CANDIDATE_MANIFEST_TMP"
+fi
 
 # v0.3: serialize sync runs with a host-side operation lock and record the
 # active run so an interrupted process can be recovered on the next sync.
@@ -269,15 +341,33 @@ cleanup_sync_operation() {
     sync_apply clear-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" >/dev/null 2>&1 || true
     sync_apply release-lock --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" >/dev/null 2>&1 || true
   fi
+  [[ -n "$CANDIDATE_MANIFEST_TMP" ]] && rm -f -- "$CANDIDATE_MANIFEST_TMP"
 }
 trap cleanup_sync_operation EXIT
 
 if [[ "$DRY_RUN" == "0" ]]; then
-  lock_output="$(sync_apply acquire-lock --root "$DSH_MEMORY_ROOT" --operation-name sync --run-id "$RUN_ID")" || {
+  lock_output=""
+  if ! lock_output="$(sync_apply acquire-lock --root "$DSH_MEMORY_ROOT" --operation-name sync --run-id "$RUN_ID")"; then
+    sync_apply lock-rejection --root "$DSH_MEMORY_ROOT" --operation-name sync --run-id "$RUN_ID" \
+      --error-code operation-in-progress >/dev/null 2>&1 || true
     print -u2 -- "dsh-memory-sync: another sync operation is in progress"
     exit 1
-  }
+  fi
   LOCK_HELD=1
+  if [[ "$RETRY_FAILED" == "0" && -n "$CANDIDATE_DIGEST" ]]; then
+    retry_output="$(sync_apply retry-check --root "$DSH_MEMORY_ROOT" --candidate-digest "$CANDIDATE_DIGEST" \
+      --sync-policy-version "$SYNC_POLICY_VERSION" --cooldown-seconds "$RETRY_COOLDOWN_SECONDS")"
+    if [[ "$(printf '%s' "$retry_output" | "$PYTHON_BIN" -c 'import json,sys; print(str(json.load(sys.stdin).get("value", {}).get("suppressed", False)).lower())')" == "true" ]]; then
+      retry_error="$(printf '%s' "$retry_output" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("value", {}).get("error_code") or "sync-failed")')"
+      sync_apply journal --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
+        --status skipped-retry --started-at "$STARTED_AT" --candidate-sessions "$CANDIDATE_SESSIONS" \
+        --processed-sessions 0 --skipped-sessions "$CANDIDATE_SESSIONS" --changed-paths "" \
+        --error-code "$retry_error" --phase retry --candidate-digest "$CANDIDATE_DIGEST" \
+        --sync-policy-version "$SYNC_POLICY_VERSION" --suppress-last-run >/dev/null 2>&1 || true
+      print -u2 -- "dsh-memory-sync: retry suppressed for $CANDIDATE_DIGEST"
+      exit 0
+    fi
+  fi
   # A previous sync may have been interrupted (dead pid + active-run record).
   # Recover it into the journal before starting a fresh run.
   recover_output="$(sync_apply recover-active --root "$DSH_MEMORY_ROOT")" || {
@@ -299,14 +389,19 @@ MANIFEST="$STAGING_PARENT/manifest.json"
 HEADLESS_SESSION_ROOT="$STAGING_PARENT/headless-sessions"
 HEADLESS_SESSION_PATCH="$STAGING_PARENT/headless-session.patch.yml"
 mkdir -p "$STAGING_PARENT"
+if [[ -n "$CANDIDATE_MANIFEST_TMP" && -f "$CANDIDATE_MANIFEST_TMP" ]]; then
+  cp -- "$CANDIDATE_MANIFEST_TMP" "$STAGING_PARENT/candidates.txt"
+fi
 umask 077
 
-apply_output="$(sync_apply stage-copy --root "$DSH_MEMORY_ROOT" --staging "$STAGING" --manifest "$MANIFEST")" || {
-  apply_error="$(printf '%s' "$apply_output" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null || echo staging-failed)"
+apply_output=""
+if ! apply_output="$(sync_apply stage-copy --root "$DSH_MEMORY_ROOT" --staging "$STAGING" --manifest "$MANIFEST")"; then
+  apply_error="$(json_error_code "$apply_output")"
+  write_failure_record "$apply_error" staging "$apply_output"
   print -u2 -- "dsh-memory-sync: staging copy failed: $apply_error"
   rm -rf -- "$STAGING_PARENT"
   exit 1
-}
+fi
 
 # The rc.7 headless bundle deliberately persists every one-shot session. If
 # it uses the normal DSH_HOME, each memory consolidation appears in the Web
@@ -329,10 +424,12 @@ STAGING_PROMPT="你是 dsh-memory 的定时记忆整合代理，现在执行一�
 
 会话日志根：$DSH_HOME/sessions。同步标记：$MARKER（unix 秒时间戳文件）。
 
+候选会话清单：$STAGING_PARENT/candidates.txt（宿主已按每轮最多 $MAX_CANDIDATE_SESSIONS 个会话、总输入最多 $MAX_CANDIDATE_BYTES 字节截断；只处理清单中的路径）。
+
 步骤：
 1. 若 $MARKER 不存在：只输出 NO_SIGNAL 并结束（首次运行不回溯历史会话）。
-2. 用 find \"$DSH_HOME/sessions\" -name 'session.jsonl.zstd' -newer \"$MARKER\" ! -newermt '-1 hour' 找出新增且已静默至少 1 小时的日志；逐个执行 python3 \"$DSH_MEMORY_ROOT/scripts/filter_session.py\" '<日志路径>' > \"${TMPDIR:-/tmp}/dsh-memory-transcript.md\"，读转录并按 README「提炼与整合」一节的提炼要求提炼（无高信号则输出 NO_SIGNAL 并跳过该会话）。
-3. 全部提炼完成后，严格按 README「提炼与整合」一节的整合要求执行 diff 式整合：与旧条目矛盾的内容覆盖旧条目（绝不叠加）、过时内容降级到 $STAGING/archive/、用户稳定偏好同步进 $STAGING/summary.md。
+2. 逐行读取候选会话清单；逐个执行 python3 \"$DSH_MEMORY_ROOT/scripts/filter_session.py\" '<日志路径>' > \"${TMPDIR:-/tmp}/dsh-memory-transcript.md\"，读转录并按 README「提炼与整合」一节的提炼要求提炼（无高信号则输出 NO_SIGNAL 并跳过该会话）。
+3. 全部提炼完成后，严格按 README「提炼与整合」一节的整合要求执行 diff 式整合：与旧条目矛盾的内容覆盖旧条目（绝不叠加）、过时内容降级到 $STAGING/archive/、用户稳定偏好同步进 $STAGING/summary.md。summary.md 最终必须不超过 12 KiB；超出时压缩重复过程和细节，不得静默超过预算。
 4. 不要执行 git、不要更新 $MARKER；宿主会负责提交和记录。
 
 收尾用一句话汇报：处理了几个会话、合并了几条记忆。"
@@ -359,11 +456,18 @@ for env_name in ${=provider_env_names}; do
 done
 
 # Run the model inside the staging worktree so its relative writes land there.
+child_status=0
 (
   cd "$STAGING"
   /usr/bin/env -i "${CHILD_ENV[@]}" "$DSH_EXECUTABLE" --profile headless \
     --patch "$HEADLESS_SESSION_PATCH" "$STAGING_PROMPT"
-)
+ ) || child_status=$?
+if [[ "$child_status" != "0" ]]; then
+  write_failure_record "child-exit" staging
+  print -u2 -- "dsh-memory-sync: headless DSH failed with exit code $child_status"
+  rm -rf -- "$STAGING_PARENT"
+  exit "$child_status"
+fi
 # The process exited successfully, so every eligible log was delivered to
 # headless DSH. Per-session NO_SIGNAL results are deliberately not guessed from
 # model prose and therefore do not change the host-side skipped count.
@@ -374,12 +478,14 @@ if [[ "$DRY_RUN" == "0" ]]; then
   sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
     --phase validating --started-at "$STARTED_AT" >/dev/null
 fi
-difference="$(sync_apply diff --staging "$STAGING" --manifest "$MANIFEST")" || {
-  diff_error="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null || echo sync-failed)"
+difference=""
+if ! difference="$(sync_apply diff --staging "$STAGING" --manifest "$MANIFEST")"; then
+  diff_error="$(json_error_code "$difference")"
+  write_failure_record "$diff_error" validating "$difference"
   print -u2 -- "dsh-memory-sync: staging diff failed: $diff_error"
   rm -rf -- "$STAGING_PARENT"
   exit 1
-}
+fi
 
 changed_paths="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["added"]+d["modified"]+d["deleted"])))')"
 diff_added="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["added"])))')"
@@ -405,7 +511,8 @@ if [[ -z "$changed_paths" ]]; then
   # stays non-journaling (see the preview contract comment near the end).
   if [[ "$DRY_RUN" == "0" && "$PREVIEW_MODE" == "0" ]]; then
     DURATION_MS=$(( ( $(date +%s) - START_TS ) * 1000 ))
-    sync_apply finalize \
+    finalize_output=""
+    if ! finalize_output="$(sync_apply finalize \
       --root "$DSH_MEMORY_ROOT" \
       --run-id "$RUN_ID" \
       --operation-name sync \
@@ -417,7 +524,15 @@ if [[ -z "$changed_paths" ]]; then
       --changed-paths "" \
       --phase complete \
       --duration-ms "$DURATION_MS" \
-      --last-sync "$START_TS" >/dev/null
+      --candidate-digest "$CANDIDATE_DIGEST" \
+      --sync-policy-version "$SYNC_POLICY_VERSION" \
+      --last-sync "$START_TS")"; then
+      sync_apply write-finalize-failure --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" \
+        --candidate-digest "$CANDIDATE_DIGEST" >/dev/null 2>&1 || true
+      print -u2 -- "dsh-memory-sync: finalize failed"
+      exit 1
+    fi
+    sync_apply clear-failure-sentinel --root "$DSH_MEMORY_ROOT" >/dev/null 2>&1 || true
   fi
   rm -rf -- "$STAGING_PARENT"
   exit 0
@@ -466,13 +581,10 @@ if [[ "$DRY_RUN" == "0" ]]; then
     --phase applying --started-at "$STARTED_AT" >/dev/null
 fi
 apply_result="$(sync_apply apply --root "$DSH_MEMORY_ROOT" --staging "$STAGING" --manifest "$MANIFEST" --run-id "$RUN_ID" --started-at "$STARTED_AT")" || {
-  apply_error="$(printf '%s' "$apply_result" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null || echo apply-failed)"
+  apply_error="$(json_error_code "$apply_result")"
   # Record the failure in the journal so the run is auditable even when the
   # apply itself did not commit anything.
-  sync_apply journal --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync --status failed \
-    --started-at "$STARTED_AT" --candidate-sessions "$CANDIDATE_SESSIONS" \
-    --processed-sessions "$PROCESSED_SESSIONS" --skipped-sessions "$SKIPPED_SESSIONS" \
-    --changed-paths "$changed_paths" --error-code "$apply_error" --phase applying >/dev/null 2>&1 || true
+  write_failure_record "$apply_error" applying "$apply_result"
   print -u2 -- "dsh-memory-sync: apply failed: $apply_result"
   rm -rf -- "$STAGING_PARENT"
   exit 1
@@ -487,7 +599,8 @@ if [[ "$DRY_RUN" == "0" ]]; then
   sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
     --phase finalizing --started-at "$STARTED_AT" >/dev/null
 fi
-sync_apply finalize \
+finalize_output=""
+if ! finalize_output="$(sync_apply finalize \
   --root "$DSH_MEMORY_ROOT" \
   --run-id "$RUN_ID" \
   --operation-name sync \
@@ -495,13 +608,21 @@ sync_apply finalize \
   --started-at "$STARTED_AT" \
   --candidate-sessions "$CANDIDATE_SESSIONS" \
   --processed-sessions "$PROCESSED_SESSIONS" \
-  --skipped-sessions "$SKIPPED_SESSIONS" \
   --changed-paths "$changed_paths" \
   --recovery-commit "$recovery_commit" \
   --apply-commit "$apply_commit" \
   --phase complete \
   --duration-ms "$DURATION_MS" \
-  --last-sync "$START_TS" >/dev/null
+  --candidate-digest "$CANDIDATE_DIGEST" \
+  --sync-policy-version "$SYNC_POLICY_VERSION" \
+  --last-sync "$START_TS")"; then
+  sync_apply write-finalize-failure --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" \
+    --candidate-digest "$CANDIDATE_DIGEST" >/dev/null 2>&1 || true
+  print -u2 -- "dsh-memory-sync: finalize failed"
+  rm -rf -- "$STAGING_PARENT"
+  exit 1
+fi
+sync_apply clear-failure-sentinel --root "$DSH_MEMORY_ROOT" >/dev/null 2>&1 || true
 
 if [[ "$DRY_RUN" == "0" ]]; then
   sync_apply clear-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" >/dev/null 2>&1 || true

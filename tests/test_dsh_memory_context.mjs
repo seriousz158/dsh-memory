@@ -44,9 +44,6 @@ const service = new MemoryRepository({ root, __testOnly: true });
 const initial = await service.context();
 assert.equal(initial.ok, true);
 assert.deepEqual(initial.value.records.map((record) => record.path), [
-  "archive/gamma.md",
-  "archive/legacy.md",
-  "archive/long.md",
   "handbook/alpha.md",
   "rollouts/beta.md",
 ]);
@@ -54,22 +51,29 @@ const alpha = initial.value.records.find((record) => record.path === "handbook/a
 assert.equal(alpha.content, "Shared architecture decision alpha.\n");
 assert.equal(alpha.citation, "[source: handbook/alpha.md · id: project/alpha]");
 assert.equal(alpha.usage_count, 1);
-const long = initial.value.records.find((record) => record.path === "archive/long.md");
-assert.equal(long.truncated, true);
-assert.equal(Buffer.byteLength(long.content, "utf8") <= 4096, true);
-assert.doesNotMatch(long.content, /�/);
+assert.equal(alpha.generation, 1);
+assert.match(alpha.content_hash, /^sha256:/);
 
-for (let index = 0; index < 3; index += 1) await service.context({ query: "gamma", limit: 1 });
+const hiddenArchive = await service.context({ query: "gamma", limit: 1 });
+assert.equal(hiddenArchive.ok, true);
+assert.equal(hiddenArchive.value.count, 0);
+for (let index = 0; index < 3; index += 1) await service.context({ query: "gamma", scope: "archive", limit: 1 });
 
 const searched = await service.context({ query: "architecture", limit: 2 });
 assert.equal(searched.ok, true);
 assert.deepEqual(searched.value.records.map((record) => record.path), [
-  "archive/gamma.md",
   "handbook/alpha.md",
+  "rollouts/beta.md",
 ]);
-assert.equal(searched.value.records[0].usage_count, 5);
+assert.equal(searched.value.records[0].usage_count, 2);
 assert.equal(searched.value.records[1].usage_count, 2);
 assert.equal(searched.value.records[0].score > 0, true);
+
+const archiveContext = await service.context({ scope: "archive", limit: 10 });
+const long = archiveContext.value.records.find((record) => record.path === "archive/long.md");
+assert.equal(long.truncated, true);
+assert.equal(Buffer.byteLength(long.content, "utf8") <= 4096, true);
+assert.doesNotMatch(long.content, /�/);
 
 const invalidQuery = await service.context({ query: "" });
 assert.deepEqual(invalidQuery, { ok: false, error: { code: "context-invalid-request" } });
@@ -80,5 +84,12 @@ const status = (await git(root, ["status", "--porcelain"])).stdout;
 assert.equal(status, "");
 assert.match(await readFile(join(root, ".sync", "usage.json"), "utf8"), /usage_count/);
 assert.match(await readFile(join(root, ".git", "info", "exclude"), "utf8"), /\.sync\/usage\.json/);
+
+await writeFile(join(root, "summary.md"), "x".repeat(12 * 1024 + 1));
+const health = await service.health();
+assert.equal(health.ok, true);
+assert.equal(health.value.summaryWithinBudget, false);
+assert.equal(health.value.summaryBytes, 12 * 1024 + 1);
+assert.equal(health.value.needsManualRecovery, true);
 
 console.log("dsh-memory context tests passed");

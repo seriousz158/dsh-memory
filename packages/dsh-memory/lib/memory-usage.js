@@ -1,6 +1,8 @@
 import { chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { parseFrontMatter } from "./memory-metadata.js";
 
 export const USAGE_FILE = ".sync/usage.json";
 export const USAGE_SCHEMA_VERSION = 1;
@@ -25,26 +27,42 @@ function isSafeUsagePath(path) {
 }
 
 function emptyUsage() {
-  return { schema_version: USAGE_SCHEMA_VERSION, records: {} };
+  return { schema_version: USAGE_SCHEMA_VERSION, records: {}, aliases: {} };
 }
 
 function validateUsage(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw usageError("usage-invalid");
   if (value.schema_version !== USAGE_SCHEMA_VERSION) throw usageError("usage-invalid");
   if (value.records === null || typeof value.records !== "object" || Array.isArray(value.records)) throw usageError("usage-invalid");
+  if (value.aliases !== undefined && (value.aliases === null || typeof value.aliases !== "object" || Array.isArray(value.aliases))) throw usageError("usage-invalid");
   const records = {};
   for (const [path, entry] of Object.entries(value.records)) {
     if (!isSafeUsagePath(path) || entry === null || typeof entry !== "object" || Array.isArray(entry)
       || !Number.isInteger(entry.usage_count) || entry.usage_count < 0 || entry.usage_count > Number.MAX_SAFE_INTEGER
-      || (entry.last_usage !== null && typeof entry.last_usage !== "string")) {
+      || (entry.last_usage !== null && typeof entry.last_usage !== "string")
+      || (entry.logical_id !== undefined && (typeof entry.logical_id !== "string" || entry.logical_id.length === 0))
+      || (entry.generation !== undefined && (!Number.isInteger(entry.generation) || entry.generation < 1))
+      || (entry.content_hash !== undefined && entry.content_hash !== null && typeof entry.content_hash !== "string")
+      || (entry.prior_usage_count !== undefined && (!Number.isInteger(entry.prior_usage_count) || entry.prior_usage_count < 0))
+      || (entry.decay_factor !== undefined && (typeof entry.decay_factor !== "number" || entry.decay_factor < 0 || entry.decay_factor > 1))) {
       throw usageError("usage-invalid");
     }
     records[path] = {
+      logical_id: entry.logical_id ?? path,
+      generation: entry.generation ?? 1,
+      content_hash: entry.content_hash ?? null,
       usage_count: entry.usage_count,
       last_usage: entry.last_usage,
+      prior_usage_count: entry.prior_usage_count ?? 0,
+      decay_factor: entry.decay_factor ?? 0.5,
     };
   }
-  return { schema_version: USAGE_SCHEMA_VERSION, records };
+  const aliases = {};
+  for (const [oldId, newId] of Object.entries(value.aliases ?? {})) {
+    if (typeof oldId !== "string" || typeof newId !== "string" || oldId.length === 0 || newId.length === 0) throw usageError("usage-invalid");
+    aliases[oldId] = newId;
+  }
+  return { schema_version: USAGE_SCHEMA_VERSION, records, aliases };
 }
 
 async function ensurePrivateDirectory(path) {
@@ -169,10 +187,29 @@ export async function recordUsage(root, paths, now = new Date()) {
     const usage = await readUsage(root);
     const timestamp = date.toISOString();
     for (const path of uniquePaths) {
-      const previous = usage.records[path] ?? { usage_count: 0, last_usage: null };
+      const content = await readFile(join(root, path), "utf8").catch(() => "");
+      const contentHash = `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
+      let metadata = null;
+      try { metadata = parseFrontMatter(content, path); } catch {}
+      const logicalId = metadata?.id ?? usage.records[path]?.logical_id ?? path;
+      const previous = usage.records[path] ?? {
+        logical_id: logicalId,
+        generation: 1,
+        content_hash: null,
+        usage_count: 0,
+        last_usage: null,
+        prior_usage_count: 0,
+        decay_factor: 0.5,
+      };
+      const changed = previous.content_hash !== null && previous.content_hash !== contentHash;
       usage.records[path] = {
-        usage_count: previous.usage_count + 1,
+        logical_id: previous.logical_id ?? logicalId,
+        generation: changed ? previous.generation + 1 : previous.generation,
+        content_hash: contentHash,
+        usage_count: changed ? 1 : previous.usage_count + 1,
         last_usage: timestamp,
+        prior_usage_count: changed ? previous.usage_count : previous.prior_usage_count ?? 0,
+        decay_factor: previous.decay_factor ?? 0.5,
       };
     }
     const usagePath = join(root, USAGE_FILE);
@@ -194,8 +231,13 @@ export async function recordUsage(root, paths, now = new Date()) {
 function usageOf(entry, usage) {
   const value = usage?.records?.[entry.path];
   return {
+    logical_id: typeof value?.logical_id === "string" ? value.logical_id : entry.id ?? entry.path,
+    generation: Number.isInteger(value?.generation) ? value.generation : 1,
+    content_hash: typeof value?.content_hash === "string" ? value.content_hash : null,
     usage_count: Number.isInteger(value?.usage_count) ? value.usage_count : 0,
     last_usage: typeof value?.last_usage === "string" ? value.last_usage : "",
+    prior_usage_count: Number.isInteger(value?.prior_usage_count) ? value.prior_usage_count : 0,
+    decay_factor: typeof value?.decay_factor === "number" ? value.decay_factor : 0.5,
   };
 }
 
@@ -203,8 +245,12 @@ export function sortByUsage(entries, usage) {
   return [...entries].sort((left, right) => {
     const a = usageOf(left, usage);
     const b = usageOf(right, usage);
-    return b.usage_count - a.usage_count
+    const aScore = a.usage_count + a.prior_usage_count * a.decay_factor;
+    const bScore = b.usage_count + b.prior_usage_count * b.decay_factor;
+    return bScore - aScore
       || b.last_usage.localeCompare(a.last_usage)
+      || a.generation - b.generation
+      || a.logical_id.localeCompare(b.logical_id)
       || String(left.path).localeCompare(String(right.path));
   });
 }
