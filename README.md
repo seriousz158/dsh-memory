@@ -13,203 +13,48 @@ It adds one persistent setting, a safe settings-page workflow for clearing memor
 - Refuses unsafe repository layouts, symbolic-link escapes, non-repository roots, and path races during a clear operation.
 - Can process only idle local session logs through an optional headless synchronizer. The synchronizer defaults to `workspace-write`, never silently installs DSH, and forwards only an allowlisted environment.
 
-## v0.2: transactional sync, audit, structured memory, and rollback
+## Capabilities
 
-> Historical: v0.2 introduced transactional sync. v0.3 (below) adds run
-> serialization, health reporting, and interrupted-run recovery on top of it.
+This README describes stable user-facing behavior. Release-by-release
+implementation details are intentionally kept out of this page; see
+[CHANGELOG.md](CHANGELOG.md) and the [GitHub releases](https://github.com/seriousz158/dsh-memory/releases)
+for historical changes.
 
-v0.2 makes every automatic write transactional:
+### Local Git-backed memory
 
-- The synchronizer copies the payload tree into an isolated staging worktree;
-  headless DSH only ever sees and writes that staging copy.
-- The one-shot headless session created for consolidation is persisted under a
-  private per-run temporary root, not the user's normal DSH session store, so
-  automatic syncs do not create conversations that require manual archiving.
-- The host verifies the staged diff (paths, read-only reference, live-root
-  concurrency) and applies it to the live memory repository with its own
-  `recovery` + `apply` commit pair. The model never runs Git.
-- Every run is journaled under `.sync/runs/<run-id>.json` with `last-run.json`
-  as the current status; the journal holds metadata only, never transcripts,
-  prompts, or credentials. `.last-sync` advances only after a successful apply.
-- New memory records use Markdown front matter (`schema_version: 1`, `id`,
-  `type`, `status`, `confidence`, dates, tags, `source_rollouts`). Legacy files
-  without front matter keep working, are counted by `status()`, and can be
-  migrated incrementally with `dsh-memory-migrate --dry-run` / `--apply`.
-- The latest journaled sync run can be rolled back as a whole through
-  `memory.rollback()` (with the `ROLLBACK_MEMORY` confirmation) or the settings
-  UI. Rollback creates a new commit; it never resets or rewrites history.
-- `memory.status()` now reports `schemaVersion`, `legacyFileCount`,
-  `pendingMigration`, and `lastRun`; `memory.runs({ limit })` lists the journal.
+- Memory stays in a local Git repository. There is no hosted memory service or
+  cloud vector database.
+- Markdown records support front matter, namespaced ids, provenance, expiry
+  projection, deterministic conflict handling, and legacy compatibility.
+- `summary.md` is a short navigation snapshot; detailed knowledge belongs in
+  `handbook/`, `rollouts/`, and `archive/`.
 
-`dsh-memory-sync --dry-run` reports the candidate diff (added/modified/deleted
-paths, rejected files and reasons) without touching the live root, the journal,
-Git, or the watermark.
+### Safe synchronization and recovery
 
-The clear operation keeps its existing semantics: it preserves `.sync`,
-`.last-sync`, `README.md`, and `scripts/`, and after a clear the journal still
-exists so an operator can see what happened. Rollback after a clear reports
-`rollback-conflict` because newer memory writes superseded the run.
+- Optional idle-session sync runs in a private per-run workspace. The model can
+  edit only the isolated copy; the host validates and writes the live Git
+  repository.
+- The host provides dry-run/preview/apply flows, operation locking, health
+  checks, bounded batches, retry backoff, duplicate-id diagnostics, and
+  metadata-only journals.
+- Recovery/apply commits, rollback, backup export/import, and legacy migration
+  keep changes auditable and reversible. Migration is available through the
+  CLI/host API, not the settings UI.
 
-## v0.3: serialized sync runs, health, and interrupted-run recovery
+### Read path
 
-v0.3 hardens the sync pipeline against concurrent runs and crashes:
+- When enabled, a bounded and explicitly untrusted `summary.md` snapshot is
+  available to the model (12 KiB maximum).
+- `memory.search()` and `memory.context()` provide local, bounded retrieval
+  with source citations and usage-aware deterministic ordering.
+- Read usage is stored as private metadata in `.sync/usage.json`; transcripts,
+  prompts, credentials, and memory content are not written to journals.
 
-- A host-side operation lock (`<root>/.sync/operation.lock`) serializes sync and
-  rollback operations. A second sync while one is running exits cleanly with
-  `operation-in-progress`; stale locks from dead processes are recovered by
-  mtime/pid checks.
-- An active-run record (`<root>/.sync/active-run.json`) tracks the phase of the
-  current run. If the host process dies mid-run, the next sync detects the dead
-  pid and recovers the interrupted run into the journal (`status: interrupted`)
-  before starting fresh work.
-- Run journal records now carry `phase`
-  (`staging`/`validating`/`applying`/`finalizing`/`complete`), `duration_ms`,
-  `rejected_file_count`, `changed_path_count`, and `staging_digest`.
-- `memory.health()` reports lock/active-run/interrupted-run/journal state and a
-  `needsManualRecovery` flag. `memory.runs()` accepts `operation` and `status`
-  filters, and `memory.status()` reports the newest pending preview.
-- Staged payloads are validated against hard limits before apply: 1 MiB per
-  file, 50 added files, 5 MiB total change bytes. Oversized or binary files are
-  rejected with `file-too-large`, `too-many-files`, `change-too-large`, or
-  `binary-file` codes instead of being applied.
-- Failed applies are journaled (`status: failed`, `error_code`) so every
-  attempted run is auditable, and the journal commit never records transcripts,
-  prompts, or credentials.
-- Duplicate ids are checked before staging and again after model edits; the
-  diagnostic includes both paths and never silently deduplicates. Lock
-  contention is written only to `.sync/lock-rejections.log`.
-- Child, staging, diff, and apply failures use a metadata-only retry key with
-  one-hour exponential backoff (up to 24 hours), a three-failure sentinel, and
-  `--retry-failed` escape hatch. Suppressed retries are kept in `.sync/runs/`
-  but never replace `last-run.json`.
-- Each real run delivers at most 10 idle sessions and 8 MiB of input. A capped
-  batch keeps a private cursor and leaves `.last-sync` unchanged until the
-  remaining candidates are processed, avoiding duplicate Provider calls.
-- Before the child starts, the host filters and redacts every candidate into a
-  temporary staging-only transcript. The model never receives live session
-  paths or the live memory-root path; transcripts are deleted before diff.
+### DSH settings integration
 
-`dsh-memory-sync --dry-run` remains read-only: it reports the candidate diff
-without touching the live root, the lock, the journal, Git, or the watermark.
-
-## v0.3.1: preview before apply
-
-v0.3.1 lets an operator review a candidate sync before it is applied:
-
-- `dsh-memory-sync --preview <id>` captures the candidate diff (baseline plus
-  model edits) as a pending preview under `<root>/.sync/previews/<id>` with a
-  7-day expiry, without applying anything.
-- `dsh-memory-sync --apply-preview <id>` applies a pending preview as a normal
-  sync transaction (recovery + apply commits), consumes the preview, and
-  journals the run under `operation: preview`.
-- `dsh-memory-sync --discard-preview <id>` removes a pending preview.
-- `dsh-memory-sync --dry-run --json` emits a single machine-parseable JSON
-  report (`dryRun`, `candidateSessions`, `changedPaths`, `added`, `modified`,
-  `deleted`, `changedBytes`) with all progress lines suppressed from stdout.
-- `memory.previews()`, `memory.applyPreview()`, and `memory.discardPreview()`
-  expose the same flow to the settings UI, which shows pending previews with
-  apply/discard actions.
-
-## v0.4: namespaced records, provenance, and local search
-
-v0.4 extends the record schema and adds a local search capability:
-
-- Record ids may be namespaced with a single `/` (`project/codegen`,
-  `user/preferences`); each segment is `[a-z0-9][a-z0-9-]*`.
-- Front matter gains optional provenance fields: `source_hash`, `created_by`,
-  `review_after`, and `expires_at`. `expires_at` is a lazy expiry projection:
-  expired records are excluded from search and conflict resolution without
-  rewriting their front matter.
-- Deterministic conflict resolution: records sharing a topic key
-  (`type:namespace`) are ordered by status precedence, then newest
-  `updated_at`, then smallest id — no model judgment needed.
-- `memory.search({ query, limit })` does local full-text search over the
-  payload records, scoring front matter and body text and returning a snippet.
-
-## v0.5: backup, compatibility, and release hardening
-
-v0.5 adds operational tooling around the memory store:
-
-- `dsh-memory-backup export <bundle>` creates a self-contained Git bundle of
-  the full memory history plus a manifest sidecar (head, commit count, payload
-  file list); the live store is never modified.
-- `dsh-memory-backup import <bundle> [--target <root>]` restores a bundle into
-  a new directory as a complete Git worktree (never overwrites an existing
-  repository), preserving recovery/apply/journal/rollback history.
-- `docs/compatibility.md` documents the DSH runtime matrix (rc.6 declared
-  peer, rc.7 verified baseline, macOS supported / Linux expected / Windows
-  unsupported) and the integration tool defaults.
-- The release checklist now verifies the backup round-trip before release.
-
-## v0.6: library-backed legacy migration
-
-v0.6 moves legacy-record inspection and migration into the host library so the
-CLI and host API use the same safe transaction path:
-
-- `memory.legacyRecords()` returns metadata-only entries for legacy Markdown
-  files (path, deterministic id, generated front matter, dates, and size).
-- `memory.migrateLegacy({ dryRun: true })` is read-only; applying with
-  `{ dryRun: false }` stages the changes, validates them, and performs a
-  host-owned recovery/apply transaction. It only adds deterministic front
-  matter and preserves each record body.
-- `dsh-memory-migrate --dry-run` and `--apply` delegate to those library APIs.
-  The journal records operation metadata only; it never contains memory body,
-  transcript, prompt, or credential content.
-- The settings UI intentionally does not expose legacy migration controls. Use
-  `dsh-memory-migrate --dry-run|--apply` or the host API when migration is
-  explicitly needed; the UI never exposes the filesystem root or runs Git.
-
-## v0.8.1: reliability, usage feedback, cited context, and read tools
-
-v0.8 adds a bounded startup snapshot and host-owned read tools without adding
-settings UI:
-
-- When memory is enabled, the current `summary.md` is injected into the
-  system prompt as a bounded, explicitly untrusted `<summary_snapshot>` data
-  block (12 KiB maximum). An unreadable snapshot falls back to the static
-  memory instructions.
-
-- `memory.context({ query, limit })` returns bounded memory bodies with stable
-  source citations (`[source: ... · id: ...]`), while preserving the existing
-  `memory.search()` API.
-- Each context read updates metadata-only usage in `.sync/usage.json` with
-  `logical_id`, `generation`, `content_hash`, `usage_count`, `last_usage`, and
-  decayed prior usage; the sidecar is private, atomic, and ignored by Git.
-  Existing repositories also receive a local `.git/info/exclude`
-  entry without changing tracked memory files.
-- Query matches are selected deterministically, then ordered by effective usage,
-  recent use, generation, logical id, and path. Active reads exclude archive;
-  callers may explicitly request `scope: "all"` or `scope: "archive"`.
-  Expired records are never returned.
-- The model can call `memory_search` (ranked snippets) and `memory_context`
-  (bounded records ordered by usage) as read tools. They return JSON with
-  relative-path citations; the host owns all filesystem access and the model
-  never receives Git or sidecar paths.
-
-- Existing legacy records retain a deterministic `legacy-<path-hash>` logical id
-  for usage and citations without being rewritten. Content changes advance a
-  generation and decay the prior generation's score instead of transferring
-  its count verbatim.
-
-## v0.7: browser end-to-end tests
-
-v0.7 adds a real browser test suite for the settings UI so the panel's
-behavior is verified, not just snapshot-checked:
-
-- The E2E runner boots a throwaway DSH web profile on an ephemeral port: a
-  fresh DSH_HOME reuses the pinned runtime and shared plugin store, symlinks
-  the local source packages into a private module graph, seeds onboarding
-  settings and an empty fixture memory repository, and registers only the two
-  memory plugins via `--patch`. The live `~/.dsh`, memory store, and provider
-  credentials are never touched.
-- Headless Chromium drives the real settings popover and asserts the
-  desktop/light layout, absence of the removed Legacy migration UI, empty
-  preview state, the enable switch, keyboard-safe accordion focus and inline
-  confirmations, status tones for failed/applied/rolled-back runs, the theme
-  token contract (`var(--dsw-*)` in the injected stylesheet), and the 480px
-  narrow layout with no horizontal overflow.
-- The suite runs as part of `npm test` and skips cleanly when the Python
-  Playwright browser-acceptance tooling is unavailable (e.g. CI images).
+The settings UI provides the memory toggle, repository status, recent-sync
+state, preview actions, rollback, and deliberate clear confirmation. It does
+not expose the filesystem root or execute Git directly.
 
 ## Compatibility
 
