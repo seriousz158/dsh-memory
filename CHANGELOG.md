@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-25
+
+### Fixed
+
+- Session filtering now distinguishes zstd frames from plain JSONL by magic
+  bytes, works under launchd's minimal `PATH`, and fails closed with
+  `zstd-unavailable` when a decoder is missing.
+- Existing memory repositories refresh the deployed session helper
+  idempotently, refuse dirty helper files, and record helper-only refresh
+  commits. This also deploys the template's credential redaction to stale
+  local installations.
+
+### Operational notes
+
+- A single session larger than `MAX_CANDIDATE_BYTES` still rejects the whole
+  batch; per-file skip-and-journal is tracked separately.
+- This release is distributed through GitHub source installs and GitHub
+  Releases; it is not published to npm.
+
 ## [0.8.1] - 2026-08-24
 
 ### Added
