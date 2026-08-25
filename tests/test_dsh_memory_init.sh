@@ -99,4 +99,29 @@ if DSH_MEMORY_ROOT="$INCOMPLETE_REPOSITORY" "$INITIALIZER" >/dev/null 2>&1; then
   exit 1
 fi
 
+REFRESH_HOME="$TEST_ROOT/refresh-home"
+DSH_HOME="$REFRESH_HOME" "$INITIALIZER" >/dev/null
+REFRESH_MEMORY_ROOT="$REFRESH_HOME/storages/memory"
+REFRESH_TEMPLATE="$FIXTURE_REPO/packages/dsh-memory/templates/scripts/filter_session.py"
+REFRESH_HELPER="$REFRESH_MEMORY_ROOT/scripts/filter_session.py"
+print -r -- '# refresh-marker-one' >> "$REFRESH_TEMPLATE"
+refresh_head_before="$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)"
+DSH_HOME="$REFRESH_HOME" "$INITIALIZER" >/dev/null
+test "$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)" != "$refresh_head_before"
+test "$(git -C "$REFRESH_MEMORY_ROOT" log -1 --format=%s)" = "Refresh helper scripts"
+test "$(git -C "$REFRESH_MEMORY_ROOT" diff-tree --no-commit-id --name-only -r HEAD)" = "scripts/filter_session.py"
+cmp -s "$REFRESH_TEMPLATE" "$REFRESH_HELPER"
+refresh_head_after="$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)"
+DSH_HOME="$REFRESH_HOME" "$INITIALIZER" >/dev/null
+test "$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)" = "$refresh_head_after"
+
+print -r -- '# uncommitted-helper-change' >> "$REFRESH_HELPER"
+print -r -- '# refresh-marker-two' >> "$REFRESH_TEMPLATE"
+if DSH_HOME="$REFRESH_HOME" "$INITIALIZER" >/dev/null 2>&1; then
+  print -u2 -- "initializer overwrote a dirty helper"
+  exit 1
+fi
+grep -q -- '# uncommitted-helper-change' "$REFRESH_HELPER"
+test "$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)" = "$refresh_head_after"
+
 print "dsh-memory initializer tests passed"
