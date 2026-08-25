@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -141,5 +144,61 @@ for (const benign of [
 assert.ok(result.stdout.includes("[REDACTED]"), "redaction marker missing");
 assert.ok(result.stdout.includes("$HOME"), "home path was not normalized");
 assert.equal(result.stdout.includes("sk-"), false, "redaction must run before truncation");
+
+const tempRoot = await mkdtemp(join(tmpdir(), "dsh-memory-filter-zstd."));
+try {
+  const plainPath = join(tempRoot, "plain.jsonl.zstd");
+  const magicPath = join(tempRoot, "invalid.jsonl.zstd");
+  const compressedPath = join(tempRoot, "compressed.jsonl.zstd");
+  const missingZstd = join(tempRoot, "missing-zstd");
+  await writeFile(plainPath, input);
+  await writeFile(magicPath, Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00]));
+
+  const plainFile = spawnSync("python3", [filterScript, plainPath], {
+    encoding: "utf8",
+    env: { ...process.env, DPSK_ZSTD: missingZstd },
+  });
+  assert.equal(plainFile.status, 0, plainFile.stderr || "plain JSONL file was rejected");
+  assert.ok(plainFile.stdout.includes("benign-user-text"));
+
+  const missingBinary = spawnSync("python3", [filterScript, magicPath], {
+    encoding: "utf8",
+    env: { ...process.env, DPSK_ZSTD: missingZstd },
+  });
+  assert.notEqual(missingBinary.status, 0, "zstd magic input unexpectedly succeeded");
+  assert.match(missingBinary.stderr, /zstd-unavailable/);
+
+  const zstdCandidates = [
+    process.env.DPSK_ZSTD,
+    "/opt/homebrew/bin/zstd",
+    "/usr/local/bin/zstd",
+  ].filter(Boolean);
+  let zstdPath = null;
+  for (const candidate of zstdCandidates) {
+    try {
+      await access(candidate, constants.X_OK);
+      zstdPath = candidate;
+      break;
+    } catch {
+      // Try the next platform-specific location.
+    }
+  }
+  if (zstdPath) {
+    const compressed = spawnSync(zstdPath, ["-q", "-f", "-o", compressedPath, plainPath], {
+      encoding: "utf8",
+    });
+    assert.equal(compressed.status, 0, compressed.stderr || "zstd fixture creation failed");
+    const decoded = spawnSync("python3", [filterScript, compressedPath], {
+      encoding: "utf8",
+      env: { ...process.env, DPSK_ZSTD: zstdPath },
+    });
+    assert.equal(decoded.status, 0, decoded.stderr || "zstd input was not decoded");
+    assert.ok(decoded.stdout.includes("benign-user-text"));
+  } else {
+    console.log("dsh-memory zstd integration fixture skipped: no executable zstd found");
+  }
+} finally {
+  await rm(tempRoot, { recursive: true, force: true });
+}
 
 console.log("dsh-memory redaction test passed");

@@ -102,6 +102,7 @@ const allowed = new Set([
   "tests/test_dsh_memory_sync_disabled.sh",
   "tests/test_dsh_memory_sync_dry_run.sh",
   "tests/test_dsh_memory_sync_env.sh",
+  "tests/test_dsh_memory_sync_zstd_failure.sh",
   "tests/test_dsh_memory_sync_lock.sh",
   "tests/test_dsh_memory_sync_batch.sh",
   "tests/test_dsh_memory_sync_preview.sh",
@@ -240,12 +241,18 @@ try {
       if (content !== null && hasUnresolvedMergeMarker(content)) add("unresolved merge marker", file);
     }
 
-    for (const manifestPath of ["package.json", "packages/dsh-memory/package.json", "packages/dsh-memory-ui/package.json"]) {
+    const expectedManifestVersions = {
+      "package.json": "0.8.2",
+      "packages/dsh-memory/package.json": "0.8.2",
+      "packages/dsh-memory-ui/package.json": "0.8.1",
+    };
+    for (const manifestPath of Object.keys(expectedManifestVersions)) {
       const content = readSnapshotText(snapshot, manifestPath);
       if (content === null) continue;
       try {
         const manifest = JSON.parse(content);
-        if (manifest.version !== "0.8.1") add("manifest version is not 0.8.1", manifestPath);
+        const expectedVersion = expectedManifestVersions[manifestPath];
+        if (manifest.version !== expectedVersion) add(`manifest version is not ${expectedVersion}`, manifestPath);
         if (manifestPath !== "package.json" && manifest.private !== true) {
           add("package is not locked against npm publication", manifestPath);
         }

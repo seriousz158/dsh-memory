@@ -6,7 +6,9 @@ Usage:
   zstd -dc <session.jsonl.zstd> | python3 filter_session.py -
 """
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -15,6 +17,8 @@ RESULT_MAX = 400
 MESSAGE_MAX = 2000
 METADATA_MAX = 400
 REDACTION = "[REDACTED]"
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+ZSTD_FALLBACKS = ("/opt/homebrew/bin/zstd", "/usr/local/bin/zstd")
 
 BEARER_RE = re.compile(r"(?i)\bbearer[ \t]+[A-Za-z0-9._~+/=-]{3,}")
 SK_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{3,}", re.IGNORECASE)
@@ -158,25 +162,59 @@ def render(events):
     return "\n".join(out)
 
 
+class ZstdUnavailable(RuntimeError):
+    """The input is a zstd frame but no usable decoder is available."""
+
+
+def resolve_zstd() -> str:
+    """Resolve zstd without silently ignoring an explicit operator override."""
+    if "DPSK_ZSTD" in os.environ:
+        candidate = os.environ.get("DPSK_ZSTD", "")
+        if not candidate or not os.path.isfile(candidate) or not os.access(candidate, os.X_OK):
+            raise ZstdUnavailable("DPSK_ZSTD is set but is not an executable zstd binary")
+        return candidate
+
+    candidate = shutil.which("zstd")
+    if candidate:
+        return candidate
+    for candidate in ZSTD_FALLBACKS:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    raise ZstdUnavailable("no executable zstd binary was found")
+
+
+def read_session_bytes(path: str) -> bytes:
+    """Read plain JSONL or decode a file whose bytes identify a zstd frame."""
+    if path == "-":
+        return sys.stdin.buffer.read()
+
+    with open(path, "rb") as handle:
+        prefix = handle.read(4)
+        if prefix != ZSTD_MAGIC:
+            handle.seek(0)
+            return handle.read()
+
+    zstd = resolve_zstd()
+    try:
+        return subprocess.run(
+            [zstd, "-dc", path],
+            capture_output=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ZstdUnavailable("zstd could not decode the session input") from exc
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(2)
     path = sys.argv[1]
-    if path == "-":
-        raw = sys.stdin.buffer.read()
-    elif path.endswith(".zstd"):
-        try:
-            raw = subprocess.run(["zstd", "-dc", path], capture_output=True, check=False).stdout
-        except FileNotFoundError:
-            # Synthetic fixtures and minimal launchd environments may not have
-            # the optional zstd binary. Treat the input as an already-decoded
-            # JSONL stream rather than failing the whole sync.
-            with open(path, "rb") as handle:
-                raw = handle.read()
-    else:
-        with open(path, "rb") as handle:
-            raw = handle.read()
+    try:
+        raw = read_session_bytes(path)
+    except ZstdUnavailable as exc:
+        print(f"zstd-unavailable: {exc}", file=sys.stderr)
+        sys.exit(1)
     events = []
     for line in raw.decode("utf-8", errors="replace").splitlines():
         if not line.strip():

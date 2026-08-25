@@ -101,7 +101,7 @@ The sync command does not install DSH. It requires a `dsh` executable on `PATH`,
 The wrapper also discovers a local Homebrew or nvm Node runtime when launchd
 starts with a minimal `PATH`; no interactive shell profile is required.
 
-The v0.8.1 host and UI packages still declare the runtime peer range
+The v0.8.2 host and UI packages still declare the runtime peer range
 `@deepseek-ai/dsh@^0.1.0-rc.6`, so DSH `rc.6` remains peer-compatible. The
 repository's reproducible clean-room and local integration baseline is
 `0.1.0-rc.7`, because the registry's `rc.6` transitive peer graph is not

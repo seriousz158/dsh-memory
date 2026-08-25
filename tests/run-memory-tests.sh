@@ -27,6 +27,7 @@ zsh tests/test_dsh_memory_init.sh
 zsh tests/test_dsh_memory_install.sh
 zsh tests/test_dsh_memory_sync_disabled.sh
 zsh tests/test_dsh_memory_sync_env.sh
+zsh tests/test_dsh_memory_sync_zstd_failure.sh
 zsh tests/test_dsh_memory_sync_dry_run.sh
 zsh tests/test_dsh_memory_sync_lock.sh
 zsh tests/test_dsh_memory_sync_batch.sh
