@@ -22,7 +22,7 @@ MARKER="$DSH_MEMORY_ROOT/.last-sync"
 PENDING_CANDIDATES="$DSH_MEMORY_ROOT/.sync/pending-candidates.json"
 DSH_BIN="${DSH_BIN:-dsh}"
 DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
-SYNC_POLICY_VERSION="${DSH_MEMORY_SYNC_POLICY_VERSION:-v0.8.1}"
+SYNC_POLICY_VERSION="${DSH_MEMORY_SYNC_POLICY_VERSION:-v0.8.2}"
 MAX_CANDIDATE_SESSIONS="${DSH_MEMORY_MAX_CANDIDATE_SESSIONS:-10}"
 MAX_CANDIDATE_BYTES="${DSH_MEMORY_MAX_CANDIDATE_BYTES:-8388608}"
 RETRY_COOLDOWN_SECONDS="${DSH_MEMORY_RETRY_COOLDOWN_SECONDS:-3600}"
@@ -545,14 +545,20 @@ if [[ "${#CANDIDATE_FILES}" -gt 0 && ! -x "$FILTER_SESSION" ]]; then
 fi
 mkdir -m 700 -p "$SANITIZED_INPUT_ROOT"
 : > "$CANDIDATE_MANIFEST_TMP"
+FILTER_ERROR_TMP="$STAGING_PARENT/filter-error.txt"
 if [[ "${#CANDIDATE_FILES}" -gt 0 ]]; then
   input_index=0
   for candidate in "${CANDIDATE_FILES[@]}"; do
     input_name="$(printf 'session-%04d.md' "$input_index")"
     input_path="$SANITIZED_INPUT_ROOT/$input_name"
-    if ! "$PYTHON_BIN" "$FILTER_SESSION" "$candidate" > "$input_path"; then
-      write_failure_record "input-filter-failed" staging
-      print -u2 -- "dsh-memory-sync: failed to redact a candidate session"
+    : > "$FILTER_ERROR_TMP"
+    if ! "$PYTHON_BIN" "$FILTER_SESSION" "$candidate" > "$input_path" 2>"$FILTER_ERROR_TMP"; then
+      filter_error_code="input-filter-failed"
+      if grep -q -- '^zstd-unavailable:' "$FILTER_ERROR_TMP"; then
+        filter_error_code="zstd-unavailable"
+      fi
+      write_failure_record "$filter_error_code" staging
+      print -u2 -- "dsh-memory-sync: failed to filter a candidate session: $filter_error_code"
       rm -rf -- "$STAGING_PARENT"
       exit 1
     fi
