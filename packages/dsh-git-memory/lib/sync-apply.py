@@ -1287,7 +1287,8 @@ def journal_entry(root_fd, run_id, operation, status, started_at, finished_at,
                   error_code=None, phase=None, staging_digest=None,
                   duration_ms=None, rejected_file_count=0, changed_path_count=None,
                   candidate_digest=None, sync_policy_version=None, update_last_run=True,
-                  error_details=None):
+                  error_details=None, processed_chunk_count=0,
+                  deferred_candidate_count=0, rejected_candidate_count=0):
     record = {
         "schema_version": 1,
         "run_id": run_id,
@@ -1310,6 +1311,9 @@ def journal_entry(root_fd, run_id, operation, status, started_at, finished_at,
         "duration_ms": duration_ms,
         "rejected_file_count": rejected_file_count,
         "changed_path_count": changed_path_count if changed_path_count is not None else len(changed_paths or []),
+        "processed_chunk_count": processed_chunk_count,
+        "deferred_candidate_count": deferred_candidate_count,
+        "rejected_candidate_count": rejected_candidate_count,
     }
     write_journal_file(root_fd, f".sync/runs/{run_id}.json", json.dumps(record, separators=(",", ":")) + "\n", 0o600)
     if update_last_run:
@@ -1318,6 +1322,7 @@ def journal_entry(root_fd, run_id, operation, status, started_at, finished_at,
             "changed_paths", "recovery_commit", "apply_commit", "error_code", "phase",
             "staging_digest", "candidate_digest", "sync_policy_version", "duration_ms",
             "rejected_file_count", "changed_path_count",
+            "processed_chunk_count", "deferred_candidate_count", "rejected_candidate_count",
         )}
         write_journal_file(root_fd, ".sync/last-run.json", json.dumps(last, separators=(",", ":")) + "\n", 0o600)
     return record
@@ -1336,7 +1341,10 @@ def finalize(root, run_id, record, last_sync_ts):
                       record.get("staging_digest"), record.get("duration_ms"),
                       record.get("rejected_file_count", 0), record.get("changed_path_count"),
                       record.get("candidate_digest"), record.get("sync_policy_version"),
-                      error_details=record.get("error_details"))
+                      error_details=record.get("error_details"),
+                      processed_chunk_count=record.get("processed_chunk_count", 0),
+                      deferred_candidate_count=record.get("deferred_candidate_count", 0),
+                      rejected_candidate_count=record.get("rejected_candidate_count", 0))
     finally:
         os.close(root_fd)
     git(root, ["add", "--", ".sync", ".last-sync"])
@@ -1375,6 +1383,9 @@ def main():
     parser.add_argument("--staging-digest", dest="staging_digest")
     parser.add_argument("--duration-ms", dest="duration_ms", type=int)
     parser.add_argument("--rejected-file-count", dest="rejected_file_count", type=int, default=0)
+    parser.add_argument("--processed-chunk-count", dest="processed_chunk_count", type=int, default=0)
+    parser.add_argument("--deferred-candidate-count", dest="deferred_candidate_count", type=int, default=0)
+    parser.add_argument("--rejected-candidate-count", dest="rejected_candidate_count", type=int, default=0)
     parser.add_argument("--candidate-digest", dest="candidate_digest")
     parser.add_argument("--sync-policy-version", dest="sync_policy_version")
     parser.add_argument("--cooldown-seconds", dest="cooldown_seconds", type=int, default=3600)
@@ -1466,7 +1477,10 @@ def main():
                 update_last_run=not args.suppress_last_run,
                 error_details={key: value for key, value in {
                     "id": args.error_id, "first_path": args.first_path, "second_path": args.second_path,
-                }.items() if value is not None})}
+                }.items() if value is not None},
+                processed_chunk_count=args.processed_chunk_count,
+                deferred_candidate_count=args.deferred_candidate_count,
+                rejected_candidate_count=args.rejected_candidate_count)}
         finally:
             os.close(root_fd)
     if args.operation == "finalize":
@@ -1482,6 +1496,9 @@ def main():
                   "staging_digest": args.staging_digest, "candidate_digest": args.candidate_digest,
                   "sync_policy_version": args.sync_policy_version, "duration_ms": args.duration_ms,
                   "rejected_file_count": args.rejected_file_count,
+                  "processed_chunk_count": args.processed_chunk_count,
+                  "deferred_candidate_count": args.deferred_candidate_count,
+                  "rejected_candidate_count": args.rejected_candidate_count,
                   "error_details": {key: value for key, value in {
                       "id": args.error_id, "first_path": args.first_path, "second_path": args.second_path,
                   }.items() if value is not None}}
