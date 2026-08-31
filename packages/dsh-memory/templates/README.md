@@ -31,8 +31,35 @@
 
 原始会话日志仍保留在本地 DSH 会话目录中，过滤器不会改写或删除源日志。若敏感值已经进入记忆 Git 历史，普通回退或删除当前文件不能保证彻底抹除；停止同步、轮换相关凭据，并按本机数据保留策略处理源日志和仓库历史。
 
+## 写入边界（单写者契约）
+
+普通会话对本仓库**只读**：不要直接写任何记忆文件，不要执行任何 git 命令。唯一写入路径是周期性事务同步 `dsh-memory-sync`：模型只在宿主准备的隔离 staging 副本中修改 `summary.md`、`handbook/`、`rollouts/`、`archive/`，退出后由宿主校验、提交并推进水位；本仓库的 README、`.sync/.gitignore` 和 `scripts/filter_session.py` 是宿主管理的只读模板，模型与 staging 都不得修改。
+
+会话中产生的记忆请求（建议沉淀的结论）记录在会话输出中即可，由后续同步负责落库。
+
+## 元数据规范
+
+新增或修改 handbook/ 与 rollouts/ 记录时必须携带 schema v1 front matter；列表字段（如 `tags`、`source_rollouts`）必须使用块列表，不允许行内流程写法：
+
+```yaml
+---
+schema_version: 1
+id: preference-response-language
+type: preference
+status: active
+confidence: high
+created_at: 2026-08-19
+updated_at: 2026-08-19
+tags:
+  - dsh-memory
+  - 检索
+source_rollouts:
+  - rollouts/2026-08-19-session-001.md
+---
+```
+
 ## 提炼与整合
 
 提炼时只保留：稳定用户偏好、最终方案与原因、失败模式、项目入口、可复现命令和明确的后续契约。无高信号时写 `NO_SIGNAL` 并跳过。
 
-整合时先比较新旧条目：冲突则覆盖、过时则移入 `archive/`、无变化则不制造噪声。`summary.md` 最终必须不超过 12 KiB；超出时压缩重复过程和细节，不得静默超出预算。完成后提交本仓库中的实际变更。
+整合时先比较新旧条目：冲突则覆盖、过时则移入 `archive/`、无变化则不制造噪声。`summary.md` 最终必须不超过 12 KiB；超出时压缩重复过程和细节，不得静默超出预算。不要执行 git、不要更新同步水位：宿主会在 staging 校验通过后代为提交。

@@ -1,6 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir, tmpdir } from "node:os";
+import { statSync, watchFile, unwatchFile } from "node:fs";
 import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { join, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +20,7 @@ import {
   releaseOperationLock,
   writeActiveRun,
 } from "./operation-lock.js";
-import { parseFrontMatter, isExpired, topicKey } from "./memory-metadata.js";
+import { parseFrontMatter, isExpired, topicKey, auditRecords, AUDIT_INVALID_METADATA_LIMIT, MetadataError } from "./memory-metadata.js";
 import { legacyId, legacyRecordSummary, migratedContent, scanLegacyRecords } from "./legacy-migration.js";
 import { contentHashOf, formatCitation, readUsage, recordUsage, sortByUsage, usageMetadata } from "./memory-usage.js";
 import { SyncTransaction } from "./sync-transaction.js";
@@ -41,24 +42,38 @@ const PYTHON_CANDIDATES = Object.freeze([
   "python3",
 ].filter(Boolean));
 const Config = z.object({ enabled: z.boolean().default(true) });
+// Single-writer contract: ordinary sessions treat the memory repository as
+// read-only. Persistence happens exclusively through the periodic
+// transactional sync (dsh-memory-sync), which stages model output, verifies
+// it host-side, and commits it. No session ever runs git or writes to the
+// live repository directly.
 const MEMORY_SECTION = `长期记忆已开启（DPSK 专属仓库 ${DEFAULT_MEMORY_ROOT}，git 版本化；操作手册见 memory 技能）。
 
 自动行为，用户无需提醒：
 1. 每个任务动手前：先读下方 <summary_snapshot>（summary.md 的启动快照），需要细节时用 memory_search / memory_context 工具或 grep handbook/ 检索；命中则遵循，无命中直接开始，不要向用户询问"要不要回忆"。
-2. 完成重要任务或会话收尾时：自动用子代理执行记忆提取（extract → rollouts/）与整合（consolidate → handbook/ 与 summary.md），随后在仓库内 git add -A && git commit。
-3. 用户纠正偏好或告知新约定时：立即更新对应记忆条目。
+2. 普通会话对记忆库只读：不要直接写记忆文件，不要执行任何 git 命令。若本会话产生了值得沉淀的结论，把它作为记忆请求记录在自己的回复或会话中（说明建议归入 handbook/ 或 rollouts/ 的要点）；周期性事务同步（dsh-memory-sync）会在后台完成提取、整合与提交。
+3. 用户纠正偏好或告知新约定时：按第 2 条记录记忆请求；不要当场改写记忆条目。
 
 硬规则：只存证据化结论；禁存凭据（写入 [REDACTED]）；原始会话日志只读；宁缺毋滥。
 `;
 
 export const SUMMARY_BUDGET_BYTES = 12 * 1024;
 const SUMMARY_INJECT_MAX_BYTES = SUMMARY_BUDGET_BYTES;
+// Prompt freshness: the injected summary snapshot must track edits to
+// summary.md without waiting for a settings change. The host polls the file
+// every few seconds; an mtime/size change triggers one debounced async
+// refresh. While the file is briefly missing or unreadable the previous
+// valid snapshot is retained — the prompt is never cleared by a transient
+// read failure.
+let lastSummarySnapshot = null;
 async function buildMemorySectionText() {
   let summary;
   try {
     summary = await readFile(join(DEFAULT_MEMORY_ROOT, "summary.md"), "utf8");
+    lastSummarySnapshot = summary;
   } catch {
-    return MEMORY_SECTION;
+    if (lastSummarySnapshot === null) return MEMORY_SECTION;
+    summary = lastSummarySnapshot;
   }
   const bounded = boundedContextBody(summary, SUMMARY_INJECT_MAX_BYTES);
   const note = bounded.truncated
@@ -69,6 +84,36 @@ async function buildMemorySectionText() {
 <summary_snapshot>
 ${bounded.content}${note}
 </summary_snapshot>`;
+}
+
+const SUMMARY_WATCH_INTERVAL_MS = 5000;
+const SUMMARY_REFRESH_DEBOUNCE_MS = 1000;
+/** Poll summary.md and invoke onChange (debounced) after mtime/size changes. */
+function startSummaryWatcher(onChange) {
+  const summaryPath = join(DEFAULT_MEMORY_ROOT, "summary.md");
+  let lastSeen = null;
+  try {
+    const stat = statSync(summaryPath);
+    lastSeen = { mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch {}
+  let debounceTimer = null;
+  watchFile(summaryPath, { interval: SUMMARY_WATCH_INTERVAL_MS }, (current) => {
+    // A zeroed stat means the file is temporarily gone; the snapshot
+    // retention in buildMemorySectionText covers it, so do not refresh.
+    if (!current || (current.size === 0 && current.mtimeMs === 0)) return;
+    if (lastSeen && current.mtimeMs === lastSeen.mtimeMs && current.size === lastSeen.size) return;
+    lastSeen = { mtimeMs: current.mtimeMs, size: current.size };
+    if (debounceTimer !== null) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      try { onChange(); } catch {}
+    }, SUMMARY_REFRESH_DEBOUNCE_MS);
+  });
+  return () => {
+    if (debounceTimer !== null) clearTimeout(debounceTimer);
+    debounceTimer = null;
+    unwatchFile(summaryPath);
+  };
 }
 
 export const name = "dsh-memory";
@@ -300,6 +345,7 @@ export class MemoryRepository {
       const { dataFileCount } = await safeClear(root, "inspect");
       const targetDirty = (await this.git(["status", "--porcelain", "--", ...TARGETS])).stdout.trim().length > 0;
       const { legacyFileCount, pendingMigration } = await this.metadataStats(root);
+      const audit = await this.metadataAudit(root);
       const lastRun = await this.readLastRun(root);
       const retrySuppressed = await this.readRetrySuppressed(root);
       const summaryBytes = await this.summaryBytes(root);
@@ -314,6 +360,10 @@ export class MemoryRepository {
         schemaVersion: 1,
         legacyFileCount,
         pendingMigration,
+        metadataValid: audit.metadataValid,
+        validMetadataCount: audit.validMetadataCount,
+        invalidMetadataCount: audit.invalidMetadataCount,
+        invalidMetadata: audit.invalidMetadata,
         lastRun,
         retrySuppressed,
         summaryBytes,
@@ -356,6 +406,7 @@ export class MemoryRepository {
       const summaryBytes = await this.summaryBytes(root);
       const failureSentinel = await this.readFailureSentinel(root);
       const finalizeFailure = await this.readFinalizeFailure(root);
+      const audit = await this.metadataAudit(root);
       const interruptedRun = activeState === "interrupted"
         ? activeRun
         : (await this.readLastRun(root))?.status === "interrupted" ? await this.readLastRun(root) : null;
@@ -371,6 +422,10 @@ export class MemoryRepository {
         finalizeFailure,
         retrySuppressed,
         payloadDirty,
+        metadataValid: audit.metadataValid,
+        validMetadataCount: audit.validMetadataCount,
+        invalidMetadataCount: audit.invalidMetadataCount,
+        invalidMetadata: audit.invalidMetadata,
         operationLock: operationLock === null ? null : {
           operation: operationLock.operation ?? null,
           pid: operationLock.pid ?? null,
@@ -383,6 +438,8 @@ export class MemoryRepository {
         pendingPreview: previews[0] ?? null,
         pendingPreviewCount: previews.length,
         journalReadable,
+        // Metadata anomalies are a data-quality warning, not a recovery
+        // blocker: reads and the periodic sync keep working around them.
         needsManualRecovery: payloadDirty || activeState === "interrupted" || interruptedRun !== null || !journalReadable
           || summaryBytes > SUMMARY_BUDGET_BYTES || (failureSentinel?.consecutive_failures ?? 0) >= 3
           || finalizeFailure !== null,
@@ -404,6 +461,27 @@ export class MemoryRepository {
     } catch {
       return { legacyFileCount: 0, pendingMigration: false };
     }
+  }
+
+  /** Record-shaped payload files eligible for the metadata audit. */
+  async recordFiles(root) {
+    return (await this.payloadFiles(root)).filter((file) => file !== "summary.md" && /\.md$/.test(file));
+  }
+
+  /**
+   * Shared metadata audit (report-only). Structured records are validated
+   * against schema v1; duplicate ids and unreadable files are reported.
+   * Metadata anomalies never block reads here and are deliberately not part
+   * of needsManualRecovery — the UI surfaces them as a separate warning.
+   */
+  async metadataAudit(root) {
+    const files = await this.recordFiles(root);
+    const records = [];
+    for (const file of files) {
+      const content = await readFileSafe(join(root, file), "utf8").catch(() => null);
+      records.push({ path: file, content });
+    }
+    return auditRecords(records);
   }
 
   async summaryBytes(root) {
@@ -768,7 +846,7 @@ export class MemoryRepository {
     }
   }
 
-  async collectSearchResults(root, query, includeArchive = false, usage = undefined) {
+  async collectSearchResults(root, query, includeArchive = false, usage = undefined, warnings = undefined) {
     const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
     if (tokens.length === 0) throw memoryError("search-invalid-request");
     const results = [];
@@ -778,7 +856,14 @@ export class MemoryRepository {
       if (!includeArchive && file.startsWith("archive/")) continue;
       const content = await readFileSafe(join(root, file), "utf8").catch(() => "");
       let metadata = null;
-      try { metadata = parseFrontMatter(content, file); } catch { continue; }
+      try {
+        metadata = parseFrontMatter(content, file);
+      } catch (error) {
+        // Invalid metadata is excluded from results but never silently
+        // dropped: the caller returns it as a warning next to the results.
+        warnings?.push({ path: file, code: error instanceof MetadataError ? error.code : "invalid-metadata" });
+        continue;
+      }
       if (metadata !== null && isExpired(metadata)) continue;
       const recordId = metadata?.id ?? legacyId(file);
       const usageInfo = usageMetadata(file, usage);
@@ -835,9 +920,10 @@ export class MemoryRepository {
     try { root = await this.inspect(); } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
     try {
       const usage = await readUsage(root);
-      const results = (await this.collectSearchResults(root, request.query, scope !== "active", usage))
+      const warnings = [];
+      const results = (await this.collectSearchResults(root, request.query, scope !== "active", usage, warnings))
         .filter((entry) => scope !== "archive" || entry.path.startsWith("archive/"));
-      return success({ query: request.query, count: results.length, results: results.slice(0, limit) });
+      return success({ query: request.query, count: results.length, results: results.slice(0, limit), warnings });
     } catch (error) {
       return failure(error?.memoryCode ?? "search-failed");
     }
@@ -859,9 +945,10 @@ export class MemoryRepository {
     try { root = await this.inspect(); } catch (error) { return failure(error?.memoryCode ?? "repo-unavailable"); }
     try {
       const usage = await readUsage(root);
+      const warnings = [];
       let candidates;
       if (hasQuery) {
-        candidates = sortByUsage(await this.collectSearchResults(root, request.query, scope !== "active", usage), usage).slice(0, limit);
+        candidates = sortByUsage(await this.collectSearchResults(root, request.query, scope !== "active", usage, warnings), usage).slice(0, limit);
       } else {
         candidates = [];
         for (const file of await this.payloadFiles(root)) {
@@ -870,7 +957,12 @@ export class MemoryRepository {
           if (scope === "archive" && !file.startsWith("archive/")) continue;
           const content = await readFileSafe(join(root, file), "utf8").catch(() => "");
           let metadata = null;
-          try { metadata = parseFrontMatter(content, file); } catch { continue; }
+          try {
+            metadata = parseFrontMatter(content, file);
+          } catch (error) {
+            warnings?.push({ path: file, code: error instanceof MetadataError ? error.code : "invalid-metadata" });
+            continue;
+          }
           if (metadata !== null && isExpired(metadata)) continue;
           const recordId = metadata?.id ?? legacyId(file);
           candidates.push({
@@ -915,6 +1007,7 @@ export class MemoryRepository {
         query: hasQuery ? request.query : null,
         count: records.length,
         records,
+        warnings,
       });
     } catch (error) {
       return failure(error?.memoryCode ?? "context-failed");
@@ -1220,6 +1313,11 @@ export function apply(ctx, entry) {
     };
     refreshPrompt = refresh;
     refresh();
-    promptCtx.effect(() => () => { if (refreshPrompt === refresh) refreshPrompt = () => {}; disposeSection?.(); }, "dsh-memory: section cleanup");
+    const stopSummaryWatcher = startSummaryWatcher(refresh);
+    promptCtx.effect(() => () => {
+      stopSummaryWatcher();
+      if (refreshPrompt === refresh) refreshPrompt = () => {};
+      disposeSection?.();
+    }, "dsh-memory: section cleanup");
   });
 }

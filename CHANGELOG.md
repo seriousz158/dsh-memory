@@ -4,6 +4,44 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-09-01
+
+### Added
+
+- Metadata audit: `status`/`health` now report `metadataValid`,
+  `validMetadataCount`, `invalidMetadataCount`, and up to 20 `invalidMetadata`
+  entries. Metadata anomalies surface as a dedicated UI warning ("记忆数据格式
+  异常") and never fold into `needsManualRecovery`.
+- Search and context exclude records with invalid metadata from retrieval and
+  return per-file `warnings` with stable error codes instead of failing.
+- Flow-style front matter collections (`tags: [a, b]`) are rejected with the
+  stable `flow-style-metadata` code; new/updated records must use canonical
+  block lists.
+- Single-writer coordination: the memory section now instructs normal sessions
+  to treat the memory repository as read-only and record memory requests in
+  their session output; the periodic transactional sync performs extraction,
+  consolidation, and git commits. README templates document the write boundary
+  and the canonical front matter format.
+- README.md, `.sync/.gitignore`, and `scripts/filter_session.py` are managed
+  readonly templates: identical checksum is a no-op, a dirty live copy fails
+  closed, changed files are replaced atomically and committed once as
+  "Refresh managed memory templates".
+- `--scan-only [--json]` is the zero-Provider acceptance path: it reports
+  candidates, raw bytes, digests, pending state, and the watermark without
+  starting DSH, acquiring the operation lock, writing a journal, or advancing
+  the watermark. `--dry-run` is a deprecated alias that no longer runs the
+  model.
+- Prompt freshness: the memory section re-renders when `summary.md` changes
+  (polled every 5s, debounced, watcher stopped on cleanup, brief file absence
+  keeps the previous snapshot).
+
+### Changed
+
+- The memory skill (v1.2.0) turns extract/consolidate/forget into memory
+  requests recorded in session output; direct file writes and git commits are
+  removed from normal sessions. Forget defaults to archive/correction with
+  explicit `supersedes`.
+
 ## [0.8.2] - 2026-08-25
 
 ### Fixed

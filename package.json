@@ -1,6 +1,6 @@
 {
   "name": "dsh-git-memory",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "private": false,
   "description": "A local Git-backed long-term memory bundle for DeepSeek Harness",
   "type": "module",

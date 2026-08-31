@@ -306,6 +306,15 @@ window.__ModuleLoader__.load({
               }
             };
             const unavailable = snapshot.status === "error" ? `长期记忆服务未就绪，暂不能修改（${snapshot.error ?? "settings-unavailable"}）` : snapshot.status === "loading" ? "正在读取长期记忆设置…" : "长期记忆设置不可写";
+            // Metadata anomalies are a data-quality warning surfaced separately
+            // from the repository health line; they never merge into recovery
+            // states on the host side either.
+            const metadataAnomaly = repository?.value && repository.value.metadataValid === false
+              ? {
+                  count: repository.value.invalidMetadataCount ?? 0,
+                  paths: (repository.value.invalidMetadata ?? []).slice(0, 5).map((entry) => entry.path),
+                }
+              : null;
             const repositoryStatus = repository?.error
               ? { tone: "danger", text: `记忆库不可用：${repository.error}`, error: true }
               : repository?.value
@@ -347,6 +356,14 @@ window.__ModuleLoader__.load({
                       jsx.jsx("span", { className: `dshmu_dot dshmu_dot--${repositoryStatus.tone}`, "aria-hidden": "true" }),
                       jsx.jsx("span", { children: repositoryStatus.text }),
                     ] }),
+              ] }) }) }),
+              metadataAnomaly !== null && jsx.jsx("section", { className: "dshmu_row", "aria-label": "记忆数据格式异常", children: jsx.jsx("div", { className: "dshmu_head dshmu_head--static", children: jsx.jsxs("div", { className: "dshmu_headMain", children: [
+                jsx.jsx("div", { className: "dshmu_title", children: "记忆数据格式异常" }),
+                jsx.jsxs("div", { className: "dshmu_statusLine dshmu_statusLine--error", children: [
+                  jsx.jsx("span", { className: "dshmu_dot dshmu_dot--warning", "aria-hidden": "true" }),
+                  jsx.jsx("span", { children: `${metadataAnomaly.count} 条记录的元数据无效；这些记录已从检索中排除，不影响其余记忆的使用与同步` }),
+                ] }),
+                metadataAnomaly.paths.length > 0 && jsx.jsx("span", { className: "dshmu_desc", children: metadataAnomaly.paths.join("、") }),
               ] }) }) }),
               repository !== null && jsx.jsxs("section", { className: "dshmu_row", "aria-label": "最近同步", onKeyDown: rowKeyDown("sync"), children: [
                 lastRun === null

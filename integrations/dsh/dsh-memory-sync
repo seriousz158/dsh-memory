@@ -6,11 +6,13 @@
 # Git commits (recovery + apply), records a run journal, and only then advances
 # the .last-sync watermark. A host-side operation lock serializes sync runs and
 # an active-run record lets an interrupted run be recovered on the next sync.
-# A --dry-run flag reports the candidate diff without touching the live root,
-# the journal, the lock, or Git.
+# v0.8.3: --scan-only --json reports candidates, raw bytes, pending state, and
+# the watermark with zero side effects (no DSH, no provider, no lock, no
+# journal, no watermark move). --dry-run is a deprecated alias of --scan-only
+# and never runs the model; a model-generated diff requires --preview <id>.
 # Zero-change runs journal a no_change record and advance the watermark so
-# the same candidate window is never rescanned; dry-run and preview runs
-# remain side-effect free (no journal record, no watermark move).
+# the same candidate window is never rescanned; preview runs remain
+# side-effect free (no journal record, no watermark move).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
@@ -22,7 +24,7 @@ MARKER="$DSH_MEMORY_ROOT/.last-sync"
 PENDING_CANDIDATES="$DSH_MEMORY_ROOT/.sync/pending-candidates.json"
 DSH_BIN="${DSH_BIN:-dsh}"
 DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
-SYNC_POLICY_VERSION="${DSH_MEMORY_SYNC_POLICY_VERSION:-v0.8.2}"
+SYNC_POLICY_VERSION="${DSH_MEMORY_SYNC_POLICY_VERSION:-v0.8.3}"
 MAX_CANDIDATE_SESSIONS="${DSH_MEMORY_MAX_CANDIDATE_SESSIONS:-10}"
 MAX_CANDIDATE_BYTES="${DSH_MEMORY_MAX_CANDIDATE_BYTES:-8388608}"
 RETRY_COOLDOWN_SECONDS="${DSH_MEMORY_RETRY_COOLDOWN_SECONDS:-3600}"
@@ -38,7 +40,7 @@ CANDIDATE_MANIFEST_TMP=""
 CANDIDATE_TRUNCATED=0
 CANDIDATE_LIMIT_ERROR=""
 
-DRY_RUN=0
+SCAN_ONLY=0
 PREVIEW_MODE=0
 APPLY_PREVIEW=""
 DISCARD_PREVIEW=""
@@ -47,7 +49,15 @@ RETRY_FAILED=0
 PREVIEW_ID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dry-run) DRY_RUN=1; shift ;;
+    # --dry-run is a deprecated alias of --scan-only: it reports the candidate
+    # scan and never starts DSH or a provider. A model-generated diff requires
+    # an explicit --preview <id>.
+    --dry-run)
+      SCAN_ONLY=1
+      print -u2 -- "dsh-memory-sync: --dry-run is deprecated and no longer runs the model; use --scan-only to scan, or --preview <id> for a model-generated diff."
+      shift
+      ;;
+    --scan-only) SCAN_ONLY=1; shift ;;
     --preview)
       PREVIEW_MODE=1
       PREVIEW_ID="${2:-}"
@@ -70,8 +80,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 # The preview management modes are mutually exclusive with a normal sync.
-if [[ "$DRY_RUN" == "1" && "$PREVIEW_MODE" == "1" ]]; then
-  print -u2 -- "dsh-memory-sync: --dry-run and --preview are mutually exclusive"
+if [[ "$SCAN_ONLY" == "1" && "$PREVIEW_MODE" == "1" ]]; then
+  print -u2 -- "dsh-memory-sync: --scan-only and --preview are mutually exclusive"
   exit 2
 fi
 management_modes=0
@@ -236,7 +246,7 @@ PY
 
 write_pending_candidates() {
   if [[ "$CANDIDATE_TRUNCATED" != "1" ]]; then
-    [[ "$DRY_RUN" == "0" && "$PREVIEW_MODE" == "0" ]] && rm -f -- "$PENDING_CANDIDATES"
+    [[ "$PREVIEW_MODE" == "0" ]] && rm -f -- "$PENDING_CANDIDATES"
     return 0
   fi
   "$PYTHON_BIN" - "$PENDING_CANDIDATES" "${CANDIDATE_FILES[@]}" <<'PY'
@@ -305,6 +315,10 @@ if [[ ! -x "$INITIALIZER" ]]; then
   exit 127
 fi
 
+# Scan-only mode is a read-only inspection: it must not run the initializer
+# (which can commit refreshed managed templates), acquire a lock, write a
+# journal, or advance the watermark.
+
 # Build a small, credential-free base environment before invoking any child.
 # The initializer only needs local filesystem and Git access; provider values
 # are intentionally unavailable until the final DSH process is started.
@@ -325,7 +339,46 @@ for env_name in ${(k)parameters}; do
   fi
 done
 
-/usr/bin/env -i "${BASE_ENV[@]}" "$INITIALIZER" >/dev/null
+if [[ "$SCAN_ONLY" != "1" ]]; then
+  /usr/bin/env -i "${BASE_ENV[@]}" "$INITIALIZER" >/dev/null
+fi
+
+# --- Scan-only mode (--scan-only [--json]) ---
+# Reports candidates, raw bytes, pending state, and the watermark without
+# starting DSH or a provider, without acquiring the operation lock, without
+# writing a journal, and without advancing the watermark. This is the
+# zero-Provider acceptance path; a model-generated diff requires an explicit
+# --preview <id>.
+emit_scan_only() {
+  local candidates_json="["
+  local candidate
+  local size
+  local digest
+  local first=1
+  for candidate in "${CANDIDATE_FILES[@]}"; do
+    size="$(stat -f %z -- "$candidate" 2>/dev/null || print 0)"
+    digest="$(candidate_file_digest "$candidate")"
+    (( first == 1 )) || candidates_json+=","
+    first=0
+    candidates_json+="{\"path\":\"$candidate\",\"bytes\":$size,\"digest\":\"$digest\"}"
+  done
+  candidates_json+="]"
+  local pending_count=0
+  [[ -f "$PENDING_CANDIDATES" ]] && pending_count="$(pending_candidate_lines | wc -l | tr -d ' ')"
+  local watermark_state="absent"
+  [[ -f "$MARKER" ]] && watermark_state="set"
+  printf '{"ok":true,"scanOnly":true,"memoryRoot":"%s","watermark":"%s","candidateSessions":%s,"candidateBytes":%s,"truncated":%s,"limitError":%s,"pendingEntries":%s,"candidates":%s}\n' \
+    "$DSH_MEMORY_ROOT" \
+    "$watermark_state" \
+    "$CANDIDATE_SESSIONS" \
+    "$CANDIDATE_BYTES" \
+    "$([[ "$CANDIDATE_TRUNCATED" == "1" ]] && print true || print false)" \
+    "$([[ -n "$CANDIDATE_LIMIT_ERROR" ]] && printf '"%s"' "$CANDIDATE_LIMIT_ERROR" || print null)" \
+    "$pending_count" \
+    "$candidates_json"
+}
+
+
 
 # --- Preview management modes (--apply-preview / --discard-preview) ---
 # These are short host-side operations handled before any session scan: they
@@ -416,22 +469,30 @@ if [[ -f "$MARKER" ]]; then
   CANDIDATE_DIGEST="$(candidate_digest "${CANDIDATE_FILES[@]}")"
   if [[ -n "$CANDIDATE_LIMIT_ERROR" ]]; then
     progress "candidate batch rejected: $CANDIDATE_LIMIT_ERROR"
-  elif [[ "$CANDIDATE_SESSIONS" == "0" ]]; then
-    [[ "$DRY_RUN" == "0" && "$PREVIEW_MODE" == "0" ]] && rm -f -- "$PENDING_CANDIDATES"
-    if [[ "$DRY_RUN" == "1" ]]; then
-      if [[ "$JSON_OUTPUT" == "1" ]]; then
-        printf '{"ok":true,"dryRun":true,"candidateSessions":0,"changedPaths":[],"message":"no new idle session logs"}\n'
-      else
-        echo "dsh-memory-sync: dry-run: no new idle session logs since $(stat -f '%Sm' "$MARKER"), nothing to do."
-      fi
-    else
-      echo "dsh-memory-sync: no new idle session logs since $(stat -f '%Sm' "$MARKER"), nothing to do."
-    fi
+  elif [[ "$CANDIDATE_SESSIONS" == "0" && "$SCAN_ONLY" != "1" ]]; then
+    # Scan-only stays side-effect free: zero candidates are reported through
+    # the scan-only output paths below instead of this early exit, and a
+    # read-only inspection must never clear pending state as a side effect.
+    [[ "$PREVIEW_MODE" == "0" ]] && rm -f -- "$PENDING_CANDIDATES"
+    echo "dsh-memory-sync: no new idle session logs since $(stat -f '%Sm' "$MARKER"), nothing to do."
     exit 0
   fi
   progress "$CANDIDATE_SESSIONS new idle session log(s), starting headless consolidation…"
 else
   progress "first run — marker will be created, historical sessions skipped."
+fi
+
+if [[ "$SCAN_ONLY" == "1" ]]; then
+  if [[ "$JSON_OUTPUT" == "1" ]]; then
+    emit_scan_only
+  elif [[ -n "$CANDIDATE_LIMIT_ERROR" ]]; then
+    print -u2 -- "dsh-memory-sync: scan-only: candidate batch rejected: $CANDIDATE_LIMIT_ERROR"
+  elif [[ "$CANDIDATE_SESSIONS" == "0" ]]; then
+    echo "dsh-memory-sync: scan-only: no new idle session logs, nothing to do."
+  else
+    echo "dsh-memory-sync: scan-only: $CANDIDATE_SESSIONS candidate session(s), $CANDIDATE_BYTES bytes$( [[ "$CANDIDATE_TRUNCATED" == "1" ]] && print ', truncated' )."
+  fi
+  exit 0
 fi
 
 DSH_EXECUTABLE="$(command -v -- "$DSH_BIN" 2>/dev/null || true)"
@@ -462,54 +523,44 @@ cleanup_sync_operation() {
 }
 trap cleanup_sync_operation EXIT
 
-if [[ "$DRY_RUN" == "0" ]]; then
-  lock_output=""
-  if ! lock_output="$(sync_apply acquire-lock --root "$DSH_MEMORY_ROOT" --operation-name sync --run-id "$RUN_ID")"; then
-    sync_apply lock-rejection --root "$DSH_MEMORY_ROOT" --operation-name sync --run-id "$RUN_ID" \
-      --error-code operation-in-progress >/dev/null 2>&1 || true
-    print -u2 -- "dsh-memory-sync: another sync operation is in progress"
-    exit 1
-  fi
-  LOCK_HELD=1
-  if [[ "$RETRY_FAILED" == "0" && -n "$CANDIDATE_DIGEST" ]]; then
-    retry_output="$(sync_apply retry-check --root "$DSH_MEMORY_ROOT" --candidate-digest "$CANDIDATE_DIGEST" \
-      --sync-policy-version "$SYNC_POLICY_VERSION" --cooldown-seconds "$RETRY_COOLDOWN_SECONDS")"
-    if [[ "$(printf '%s' "$retry_output" | "$PYTHON_BIN" -c 'import json,sys; print(str(json.load(sys.stdin).get("value", {}).get("suppressed", False)).lower())')" == "true" ]]; then
-      retry_error="$(printf '%s' "$retry_output" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("value", {}).get("error_code") or "sync-failed")')"
-      sync_apply journal --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
-        --status skipped-retry --started-at "$STARTED_AT" --candidate-sessions "$CANDIDATE_SESSIONS" \
-        --processed-sessions 0 --skipped-sessions "$CANDIDATE_SESSIONS" --changed-paths "" \
-        --error-code "$retry_error" --phase retry --candidate-digest "$CANDIDATE_DIGEST" \
-        --sync-policy-version "$SYNC_POLICY_VERSION" --suppress-last-run >/dev/null 2>&1 || true
-      print -u2 -- "dsh-memory-sync: retry suppressed for $CANDIDATE_DIGEST"
-      exit 0
-    fi
-  fi
-  # A previous sync may have been interrupted (dead pid + active-run record).
-  # Recover it into the journal before starting a fresh run.
-  recover_output="$(sync_apply recover-active --root "$DSH_MEMORY_ROOT")" || {
-    print -u2 -- "dsh-memory-sync: active run recovery failed: $recover_output"
-    exit 1
-  }
-  recovered="$(printf '%s' "$recover_output" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["value"]["recovered"])')"
-  if [[ "$recovered" == "True" ]]; then
-    progress "recovered an interrupted run; see the run journal."
-  fi
-  sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
-    --phase staging --started-at "$STARTED_AT" >/dev/null
+lock_output=""
+if ! lock_output="$(sync_apply acquire-lock --root "$DSH_MEMORY_ROOT" --operation-name sync --run-id "$RUN_ID")"; then
+  sync_apply lock-rejection --root "$DSH_MEMORY_ROOT" --operation-name sync --run-id "$RUN_ID" \
+    --error-code operation-in-progress >/dev/null 2>&1 || true
+  print -u2 -- "dsh-memory-sync: another sync operation is in progress"
+  exit 1
 fi
+LOCK_HELD=1
+if [[ "$RETRY_FAILED" == "0" && -n "$CANDIDATE_DIGEST" ]]; then
+  retry_output="$(sync_apply retry-check --root "$DSH_MEMORY_ROOT" --candidate-digest "$CANDIDATE_DIGEST" \
+    --sync-policy-version "$SYNC_POLICY_VERSION" --cooldown-seconds "$RETRY_COOLDOWN_SECONDS")"
+  if [[ "$(printf '%s' "$retry_output" | "$PYTHON_BIN" -c 'import json,sys; print(str(json.load(sys.stdin).get("value", {}).get("suppressed", False)).lower())')" == "true" ]]; then
+    retry_error="$(printf '%s' "$retry_output" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("value", {}).get("error_code") or "sync-failed")')"
+    sync_apply journal --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
+      --status skipped-retry --started-at "$STARTED_AT" --candidate-sessions "$CANDIDATE_SESSIONS" \
+      --processed-sessions 0 --skipped-sessions "$CANDIDATE_SESSIONS" --changed-paths "" \
+      --error-code "$retry_error" --phase retry --candidate-digest "$CANDIDATE_DIGEST" \
+      --sync-policy-version "$SYNC_POLICY_VERSION" --suppress-last-run >/dev/null 2>&1 || true
+    print -u2 -- "dsh-memory-sync: retry suppressed for $CANDIDATE_DIGEST"
+    exit 0
+  fi
+fi
+# A previous sync may have been interrupted (dead pid + active-run record).
+# Recover it into the journal before starting a fresh run.
+recover_output="$(sync_apply recover-active --root "$DSH_MEMORY_ROOT")" || {
+  print -u2 -- "dsh-memory-sync: active run recovery failed: $recover_output"
+  exit 1
+}
+recovered="$(printf '%s' "$recover_output" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["value"]["recovered"])')"
+if [[ "$recovered" == "True" ]]; then
+  progress "recovered an interrupted run; see the run journal."
+fi
+sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
+  --phase staging --started-at "$STARTED_AT" >/dev/null
 
 if [[ -n "$CANDIDATE_LIMIT_ERROR" ]]; then
-  if [[ "$DRY_RUN" == "1" ]]; then
-    if [[ "$JSON_OUTPUT" == "1" ]]; then
-      printf '{"ok":false,"dryRun":true,"error":{"code":"%s"}}\n' "$CANDIDATE_LIMIT_ERROR"
-    else
-      print -u2 -- "dsh-memory-sync: candidate batch rejected: $CANDIDATE_LIMIT_ERROR"
-    fi
-  else
-    write_failure_record "$CANDIDATE_LIMIT_ERROR" candidate-scan
-    print -u2 -- "dsh-memory-sync: candidate batch rejected: $CANDIDATE_LIMIT_ERROR"
-  fi
+  write_failure_record "$CANDIDATE_LIMIT_ERROR" candidate-scan
+  print -u2 -- "dsh-memory-sync: candidate batch rejected: $CANDIDATE_LIMIT_ERROR"
   exit 1
 fi
 
@@ -641,10 +692,8 @@ fi
 PROCESSED_SESSIONS="$CANDIDATE_SESSIONS"
 
 # --- Host-side verification and apply ---
-if [[ "$DRY_RUN" == "0" ]]; then
-  sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
-    --phase validating --started-at "$STARTED_AT" >/dev/null
-fi
+sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
+  --phase validating --started-at "$STARTED_AT" >/dev/null
 difference=""
 if ! difference="$(sync_apply diff --staging "$STAGING" --manifest "$MANIFEST" --run-id "$RUN_ID")"; then
   diff_error="$(json_error_code "$difference")"
@@ -662,21 +711,14 @@ diff_bytes="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; 
 json_list() { [[ -z "$1" ]] && printf '[]' || printf '[%s]' "$(printf '%s' "$1" | /usr/bin/sed 's/\([^,]*\)/"\1"/g')"; }
 
 if [[ -z "$changed_paths" ]]; then
-  if [[ "$DRY_RUN" == "1" && "$JSON_OUTPUT" == "1" ]]; then
-    printf '{"ok":true,"dryRun":true,"candidateSessions":%s,"changedPaths":[],"message":"no changes"}\n' "$CANDIDATE_SESSIONS"
-  else
-    echo "dsh-memory-sync: no memory changes, nothing to apply."
-    if [[ "$DRY_RUN" == "1" ]]; then
-      echo "dsh-memory-sync: dry-run: no changes would be applied."
-    fi
-  fi
+  echo "dsh-memory-sync: no memory changes, nothing to apply."
   # Zero-change runs still advance the watermark and journal a no_change
   # record: every candidate was delivered to the model, so rescanning the
   # same window forever would only repeat paid model calls. The run did not
   # touch the live payload, so finalize commits only .sync + .last-sync.
   # Preview runs are excluded: preview mode is an operator-review tool and
   # stays non-journaling (see the preview contract comment near the end).
-  if [[ "$DRY_RUN" == "0" && "$PREVIEW_MODE" == "0" ]]; then
+  if [[ "$PREVIEW_MODE" == "0" ]]; then
     typeset -a FINALIZE_LAST_SYNC_ARGS
     FINALIZE_LAST_SYNC_ARGS=()
     [[ "$CANDIDATE_TRUNCATED" == "1" ]] || FINALIZE_LAST_SYNC_ARGS=(--last-sync "$START_TS")
@@ -709,17 +751,6 @@ if [[ -z "$changed_paths" ]]; then
   exit 0
 fi
 
-if [[ "$DRY_RUN" == "1" ]]; then
-  if [[ "$JSON_OUTPUT" == "1" ]]; then
-    printf '{"ok":true,"dryRun":true,"candidateSessions":%s,"changedPaths":%s,"added":%s,"modified":%s,"deleted":%s,"changedBytes":%s}\n' \
-      "$CANDIDATE_SESSIONS" "$(json_list "$changed_paths")" "$(json_list "$diff_added")" "$(json_list "$diff_modified")" "$(json_list "$diff_deleted")" "$diff_bytes"
-  else
-    echo "dsh-memory-sync: dry-run — would apply: $changed_paths"
-  fi
-  rm -rf -- "$STAGING_PARENT"
-  exit 0
-fi
-
 # --- Preview mode: stage the candidate diff under .sync/previews/<id> and
 # leave it pending. Nothing is applied, journaled, or committed here; the
 # model edit is captured so an operator can review and apply it later.
@@ -747,10 +778,8 @@ if [[ "$PREVIEW_MODE" == "1" ]]; then
   exit 0
 fi
 
-if [[ "$DRY_RUN" == "0" ]]; then
-  sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
-    --phase applying --started-at "$STARTED_AT" >/dev/null
-fi
+sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
+  --phase applying --started-at "$STARTED_AT" >/dev/null
 apply_result="$(sync_apply apply --root "$DSH_MEMORY_ROOT" --staging "$STAGING" --manifest "$MANIFEST" --run-id "$RUN_ID" --started-at "$STARTED_AT")" || {
   apply_error="$(json_error_code "$apply_result")"
   # Record the failure in the journal so the run is auditable even when the
@@ -766,10 +795,8 @@ apply_commit="$(printf '%s' "$apply_result" | /usr/bin/python3 -c 'import json,s
 
 # Journal the run and advance the watermark only after a successful apply.
 DURATION_MS=$(( ( $(date +%s) - START_TS ) * 1000 ))
-if [[ "$DRY_RUN" == "0" ]]; then
-  sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
-    --phase finalizing --started-at "$STARTED_AT" >/dev/null
-fi
+sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
+  --phase finalizing --started-at "$STARTED_AT" >/dev/null
 finalize_output=""
 typeset -a FINALIZE_LAST_SYNC_ARGS
 FINALIZE_LAST_SYNC_ARGS=()
@@ -799,11 +826,9 @@ fi
 write_pending_candidates
 sync_apply clear-failure-sentinel --root "$DSH_MEMORY_ROOT" >/dev/null 2>&1 || true
 
-if [[ "$DRY_RUN" == "0" ]]; then
-  sync_apply clear-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" >/dev/null 2>&1 || true
-  sync_apply release-lock --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" >/dev/null 2>&1 || true
-  LOCK_HELD=0
-fi
+sync_apply clear-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" >/dev/null 2>&1 || true
+sync_apply release-lock --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" >/dev/null 2>&1 || true
+LOCK_HELD=0
 
 echo "dsh-memory-sync: applied $changed_paths (recovery $recovery_commit, apply $apply_commit, run $RUN_ID)."
 rm -rf -- "$STAGING_PARENT"
