@@ -931,6 +931,7 @@ export class MemoryRepository {
         path: file,
         id: recordId,
         type: metadata?.type ?? null,
+        status: metadata?.status ?? null,
         tags: metadata?.tags ?? [],
         updatedAt: metadata?.updated_at ?? null,
         rawBody: body,
@@ -966,6 +967,7 @@ export class MemoryRepository {
     const { records, warnings: scanWarnings } = await this.scanRecords(root, usage);
     const results = [];
     for (const record of records) {
+      if (!includeArchive && (record.status === "superseded" || record.status === "archived")) continue;
       const score = this.rawLexicalScore(record, tokens);
       if (score <= 0) continue;
       const first = record.__bodyLower.indexOf(tokens[0]);
@@ -997,14 +999,20 @@ export class MemoryRepository {
    * when the index is unavailable.
    */
   async retrieve(root, query, scope, usage, warnings) {
-    const inScope = scope === "archive"
+    // v0.9.1: the default active scope also excludes records whose own
+    // status is superseded or archived (expired records are already skipped
+    // at scan time), so retired knowledge stays retrievable only through an
+    // explicit "all" scope or the archive directory itself.
+    const inPathScope = scope === "archive"
       ? (path) => path.startsWith("archive/")
       : scope === "active"
         ? (path) => !path.startsWith("archive/")
         : () => true;
+    const inRecordScope = (record) =>
+      inPathScope(record.path) && (scope !== "active" || (record.status !== "superseded" && record.status !== "archived"));
     const { records, warnings: scanWarnings } = await this.scanRecords(root, usage);
-    warnings.push(...scanWarnings.filter((warning) => inScope(warning.path)));
-    const candidates = records.filter((record) => inScope(record.path));
+    warnings.push(...scanWarnings.filter((warning) => inPathScope(warning.path)));
+    const candidates = records.filter((record) => inRecordScope(record));
     const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
     if (tokens.length === 0) throw memoryError("search-invalid-request");
     for (const record of candidates) {

@@ -96,7 +96,7 @@ if [[ -n "\$manifest" && -f "\$manifest" ]]; then
 fi
 print -- "\$n" > "\$out/chunk-count.txt"
 mkdir -p handbook
-print -- "stub consolidation run \$seq" > handbook/consolidated.md
+print -- "---\\nschema_version: 1\\nid: consolidated\\ntype: observation\\nsource_session_digest: stub-digest-\$seq\\n---\\nstub consolidation run \$seq" > handbook/consolidated.md
 EOF
   chmod +x "$bin/dsh"
 }

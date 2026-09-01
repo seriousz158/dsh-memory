@@ -259,6 +259,27 @@ if (rebuilt.value.retrieval.mode === "hybrid") {
   assert.equal(rebuilt.value.results[0].path, "handbook/retrieval-extra.md");
 }
 
+// v0.9.1: the default (active) scope excludes status-superseded records;
+// they remain retrievable through an explicit "all" scope.
+await writeFile(join(root, "handbook", "superseded-note.md"), `---
+schema_version: 1
+id: infra/superseded-note
+type: observation
+status: superseded
+---
+superseded zzz-exclusive caching guidance that must not surface by default.
+`);
+await git(root, ["add", "."]);
+await git(root, ["commit", "-m", "add superseded fixture"]);
+{
+  const active = await service.search({ query: "zzz-exclusive" });
+  assert.equal(active.ok, true);
+  assert.equal(active.value.results.some((entry) => entry.path === "handbook/superseded-note.md"), false);
+  const all = await service.search({ query: "zzz-exclusive", scope: "all" });
+  assert.equal(all.ok, true);
+  assert.ok(all.value.results.some((entry) => entry.path === "handbook/superseded-note.md"));
+}
+
 // Degraded mode: a corrupt index plus an unwritable .sync directory forces
 // the pure-scan fallback with correct results.
 // Corrupt the SQLite header (not the tail: SQLite tolerates trailing junk

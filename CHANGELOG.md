@@ -4,6 +4,46 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-01
+
+### Added
+
+- Explicit-only conflict resolution: `resolveTopicConflict()` no longer
+  applies implicit "newest wins" ordering. A winner emerges only through an
+  explicit `supersedes` link (the named record is projected out), records
+  linked by `conflicts_with` block each other until an operator resolves the
+  conflict, and zero-or-multiple contenders resolve to "unresolved" instead
+  of silently discarding knowledge. Expired records and records whose own
+  status is `superseded`/`archived` still project out. Mirrored in the host
+  staging helper.
+- Handbook provenance gate (fail-closed): newly added `handbook/` records in
+  a staged diff must carry at least one of `source_rollouts`,
+  `source_session_digest`, or `source_hash`; the host rejects the whole diff
+  with `missing-provenance` otherwise. Baseline (pre-existing) records are
+  exempt so legacy migration keeps working. The consolidation prompt and the
+  managed template README document the requirement and the explicit
+  supersession/conflict workflow.
+- Independent enrichment preview: `--preview` metadata now splits
+  `changed_paths` into `enrichment_paths` (under `handbook/`) and
+  `consolidation_paths`, and the run output reports both categories so
+  distilled handbook knowledge can be reviewed separately from
+  consolidation edits. `--apply-preview` still applies the captured diff
+  atomically. Staging-diff failures now print structured error details
+  (path/phase/run id) for faster diagnosis.
+- Release acceptance checklist: `docs/release-checklist.md` gains the local
+  deployment acceptance sequence — backup, quiesce the memory-sync
+  LaunchAgent only, safe-window DSH restart, zero-Provider `--scan-only
+  --json` acceptance, scheduler reload, and a hybrid-retrieval smoke check.
+
+### Changed
+
+- Default retrieval scope: the `active` scope (and the legacy read path)
+  now excludes records whose own status is `superseded` or `archived`;
+  expired records were already skipped. Retired knowledge remains
+  retrievable through `scope: "all"` or the archive directory.
+- `SYNC_POLICY_VERSION` advances to `v0.9.1`: the staging contract changed
+  (provenance gate, explicit conflict chain).
+
 ## [0.9.0] - 2026-09-01
 
 ### Added

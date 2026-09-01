@@ -31,7 +31,7 @@ MARKER="$DSH_MEMORY_ROOT/.last-sync"
 PENDING_CANDIDATES="$DSH_MEMORY_ROOT/.sync/pending-candidates.json"
 DSH_BIN="${DSH_BIN:-dsh}"
 DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
-SYNC_POLICY_VERSION="${DSH_MEMORY_SYNC_POLICY_VERSION:-v0.8.4}"
+SYNC_POLICY_VERSION="${DSH_MEMORY_SYNC_POLICY_VERSION:-v0.9.1}"
 # Model input batch caps: how much sanitized transcript is delivered per run.
 MAX_CANDIDATE_SESSIONS="${DSH_MEMORY_MAX_CANDIDATE_SESSIONS:-10}"
 MAX_CANDIDATE_BYTES="${DSH_MEMORY_MAX_CANDIDATE_BYTES:-8388608}"
@@ -820,7 +820,7 @@ STAGING_PROMPT="你是 dsh-memory 的定时记忆整合代理，现在执行一�
 
 步骤：
 1. 逐行读取候选会话清单中的临时脱敏转录，按 README「提炼与整合」一节的提炼要求提炼（无高信号则输出 NO_SIGNAL 并跳过该会话）。
-3. 全部提炼完成后，严格按 README「提炼与整合」一节的整合要求执行 diff 式整合：与旧条目矛盾的内容覆盖旧条目（绝不叠加）、过时内容降级到 $STAGING/archive/、用户稳定偏好同步进 $STAGING/summary.md。summary.md 最终必须不超过 12 KiB；超出时压缩重复过程和细节，不得静默超过预算。
+3. 全部提炼完成后，严格按 README「提炼与整合」一节的整合要求执行 diff 式整合：与旧条目矛盾的内容覆盖旧条目（绝不叠加）——新条目须声明 supersedes: <旧条目 id> 并把旧条目 status 置为 superseded；无法合并的矛盾用 conflicts_with 显式标注；过时内容降级到 $STAGING/archive/；新增 $STAGING/handbook/ 条目必须至少携带 source_rollouts、source_session_digest、source_hash 之一（否则宿主校验会拒绝整个 diff，错误码 missing-provenance）。用户稳定偏好同步进 $STAGING/summary.md。summary.md 最终必须不超过 12 KiB；超出时压缩重复过程和细节，不得静默超过预算。
 4. 不要执行 git、不要更新同步水位；宿主会负责提交和记录。
 
 收尾用一句话汇报：处理了几个会话、合并了几条记忆。"
@@ -874,7 +874,8 @@ difference=""
 if ! difference="$(sync_apply diff --staging "$STAGING" --manifest "$MANIFEST" --run-id "$RUN_ID")"; then
   diff_error="$(json_error_code "$difference")"
   write_failure_record "$diff_error" validating "$difference"
-  print -u2 -- "dsh-memory-sync: staging diff failed: $diff_error"
+  diff_details="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin).get("error",{}); print(" ".join(f"{k}={v}" for k,v in sorted(d.items()) if k not in ("code",)))' 2>/dev/null || true)"
+  print -u2 -- "dsh-memory-sync: staging diff failed: $diff_error${diff_details:+ ($diff_details)}"
   rm -rf -- "$STAGING_PARENT"
   exit 1
 fi
@@ -950,7 +951,25 @@ if [[ "$PREVIEW_MODE" == "1" ]]; then
   cp -R -- "$STAGING" "$preview_root/staging"
   chmod -R 700 "$preview_root/staging" 2>/dev/null || true
   PREVIEW_EXPIRES=$(date -u -v+7d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+7 days' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
-  preview_meta="{\"preview_id\":\"$PREVIEW_ID\",\"created_at\":\"$STARTED_AT\",\"expires_at\":\"$PREVIEW_EXPIRES\",\"candidate_sessions\":$CANDIDATE_SESSIONS,\"changed_paths\":[$(printf '%s' "$changed_paths" | /usr/bin/sed 's/\([^,]*\)/"\1"/g')],\"status\":\"pending\"}"
+  # v0.9.1: enrichment (handbook/) is an independent preview category. The
+  # changed-path set is split so operators can see — and reason about — the
+  # distilled handbook knowledge separately from consolidation edits to
+  # rollouts/, archive/, and summary.md. apply-preview still applies the
+  # whole captured diff atomically; the split is a review affordance.
+  typeset -a ENRICHMENT_PARTS CONSOLIDATION_PARTS
+  ENRICHMENT_PARTS=()
+  CONSOLIDATION_PARTS=()
+  for preview_path in "${(@s:,:)changed_paths}"; do
+    [[ -z "$preview_path" ]] && continue
+    if [[ "$preview_path" == handbook/* ]]; then
+      ENRICHMENT_PARTS+=("$preview_path")
+    else
+      CONSOLIDATION_PARTS+=("$preview_path")
+    fi
+  done
+  enrichment_paths="$(json_list "${(j:,:)ENRICHMENT_PARTS}")"
+  consolidation_paths="$(json_list "${(j:,:)CONSOLIDATION_PARTS}")"
+  preview_meta="{\"preview_id\":\"$PREVIEW_ID\",\"created_at\":\"$STARTED_AT\",\"expires_at\":\"$PREVIEW_EXPIRES\",\"candidate_sessions\":$CANDIDATE_SESSIONS,\"changed_paths\":[$(printf '%s' "$changed_paths" | /usr/bin/sed 's/\([^,]*\)/"\1"/g')],\"enrichment_paths\":$enrichment_paths,\"consolidation_paths\":$consolidation_paths,\"status\":\"pending\"}"
   sync_apply write-preview --root "$DSH_MEMORY_ROOT" --run-id "$PREVIEW_ID" --preview-json "$preview_meta" >/dev/null || {
     print -u2 -- "dsh-memory-sync: preview write failed"
     rm -rf -- "$STAGING_PARENT"
@@ -958,6 +977,8 @@ if [[ "$PREVIEW_MODE" == "1" ]]; then
   }
   echo "dsh-memory-sync: preview $PREVIEW_ID created (pending, expires $PREVIEW_EXPIRES)."
   echo "dsh-memory-sync: changed: $changed_paths"
+  echo "dsh-memory-sync: enrichment (handbook/): $( [[ "${#ENRICHMENT_PARTS}" == "0" ]] && print "(none)" || print "${(j:,:)ENRICHMENT_PARTS}" )"
+  echo "dsh-memory-sync: consolidation: $( [[ "${#CONSOLIDATION_PARTS}" == "0" ]] && print "(none)" || print "${(j:,:)CONSOLIDATION_PARTS}" )"
   rm -rf -- "$STAGING_PARENT"
   exit 0
 fi

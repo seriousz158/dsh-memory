@@ -59,7 +59,17 @@ mkdir -p "$PRIVATE_SESSION_ROOT"
 print -r -- "$PRIVATE_SESSION_ROOT" > "$HOME/private-session-root.txt"
 [[ "${DSH_PERMISSION_MODE:-}" == "workspace-write" ]]
 # Simulate a model edit inside the staging worktree (the sync cds into staging).
-printf 'synthetic memory entry\n' > handbook/synthetic-entry.md
+# v0.9.1: added handbook records must carry provenance or the host rejects
+# the whole diff with missing-provenance.
+cat > handbook/synthetic-entry.md <<'RECORD'
+---
+schema_version: 1
+id: synthetic-entry
+type: observation
+source_session_digest: synthetic-digest
+---
+synthetic memory entry
+RECORD
 /usr/bin/env | /usr/bin/sed 's/=.*//' | /usr/bin/sort
 EOF
 chmod +x "$TEST_BIN/fake-dsh"
@@ -129,7 +139,7 @@ NODE_SHEBANG_DSH="$TEST_BIN/node-shebang-dsh"
 cat > "$NODE_SHEBANG_DSH" <<'EOF'
 #!/usr/bin/env node
 const fs = require("node:fs");
-fs.writeFileSync("handbook/node-launchd-entry.md", "synthetic node launchd entry\n");
+fs.writeFileSync("handbook/node-launchd-entry.md", "---\nschema_version: 1\nid: node-launchd-entry\ntype: observation\nsource_session_digest: synthetic-digest\n---\nsynthetic node launchd entry\n");
 EOF
 chmod +x "$NODE_SHEBANG_DSH"
 touch -t 200001010000 "$TEST_MEMORY_ROOT/.last-sync"

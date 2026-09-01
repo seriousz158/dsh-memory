@@ -141,10 +141,48 @@ def test_summary_budget_fails_closed():
         assert result["error"]["code"] == "summary-too-large", result
 
 
+def test_missing_provenance():
+    # v0.9.1: a newly added handbook record without provenance fails closed;
+    # the same record with source_rollouts (or digest/hash) applies cleanly,
+    # and modifications to baseline records stay exempt.
+    with tempfile.TemporaryDirectory(prefix="dsh-memory-provenance-") as directory:
+        root = pathlib.Path(directory) / "memory"
+        root.mkdir()
+        init_root(root)
+        staging = pathlib.Path(directory) / "staging"
+        manifest = pathlib.Path(directory) / "manifest.json"
+        code, result = run_helper("stage-copy", "--root", root, "--staging", staging, "--manifest", manifest)
+        assert code == 0, result
+        (staging / "handbook/new.md").write_text(
+            "---\nschema_version: 1\nid: hand/new\ntype: decision\n---\nbody\n", encoding="utf-8")
+        code, result = run_helper("diff", "--staging", staging, "--manifest", manifest)
+        assert code != 0, result
+        assert result["error"]["code"] == "missing-provenance", result
+        assert result["error"]["path"] == "handbook/new.md", result
+        # With provenance the same record passes.
+        (staging / "handbook/new.md").write_text(
+            "---\nschema_version: 1\nid: hand/new\ntype: decision\nsource_rollouts:\n  - rollouts/a.md\n---\nbody\n",
+            encoding="utf-8")
+        code, result = run_helper("diff", "--staging", staging, "--manifest", manifest)
+        assert code == 0, result
+        # session-digest provenance also satisfies the gate.
+        (staging / "handbook/new2.md").write_text(
+            "---\nschema_version: 1\nid: hand/new2\ntype: decision\nsource_session_digest: abc123\n---\nbody\n",
+            encoding="utf-8")
+        code, result = run_helper("diff", "--staging", staging, "--manifest", manifest)
+        assert code == 0, result
+        # Modifying a baseline handbook record stays exempt from the gate.
+        (staging / "handbook/a.md").write_text(
+            "---\nschema_version: 1\nid: same-record\ntype: fact\n---\nedited body\n", encoding="utf-8")
+        code, result = run_helper("diff", "--staging", staging, "--manifest", manifest)
+        assert code == 0, result
+
+
 if __name__ == "__main__":
     test_baseline_duplicate()
     test_staging_duplicate()
     test_failure_state_semantics()
     test_readonly_reference_is_not_payload()
     test_summary_budget_fails_closed()
+    test_missing_provenance()
     print("dsh-memory sync failure diagnostics tests passed")

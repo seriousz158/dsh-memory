@@ -21,7 +21,7 @@ done
 cat > "$TEST_BIN/dsh" <<'EOF'
 #!/bin/zsh
 set -euo pipefail
-print -- 'batch synthetic memory' > handbook/batch.md
+print -- "---\nschema_version: 1\nid: batch-entry\ntype: observation\nsource_session_digest: stub-digest\n---\nbatch synthetic memory" > handbook/batch.md
 EOF
 chmod +x "$TEST_BIN/dsh"
 

@@ -74,6 +74,7 @@ async function seedPendingPreview(root, index = 2) {
     `id: e2e/preview-${index}`,
     "type: fact",
     "status: active",
+    `source_session_digest: e2e-preview-${index}`,
     "created_at: 2026-08-21",
     "updated_at: 2026-08-21",
     "---",

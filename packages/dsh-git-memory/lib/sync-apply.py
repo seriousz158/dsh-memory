@@ -555,9 +555,9 @@ def parse_metadata_scalar(value):
 
 def parse_record_metadata(text, relative):
     if relative == "summary.md" or not relative.endswith(".md") or not path_is_payload(relative):
-        return None
+        return None, None
     if not (text.startswith("---\n") or text.startswith("---\r\n")):
-        return None
+        return None, None
     match = re.match(r"^---\r?\n([\s\S]*?)\r?\n---\r?\n?", text)
     if match is None:
         raise SyncError("invalid-metadata")
@@ -617,7 +617,7 @@ def parse_record_metadata(text, relative):
             not isinstance(values[field], str) or not DATE_RE.fullmatch(values[field])
         ):
             raise SyncError("invalid-metadata")
-    return record_id
+    return record_id, values
 
 
 def metadata_topic_key(record):
@@ -643,21 +643,39 @@ def is_record_expired(record, now=None):
 
 
 def resolve_topic_conflict(records, now=None):
-    """Deterministic winner among records sharing a topic key. Expired records
-    never win; status precedence active > candidate > conflicted > superseded >
-    archived; newest updated_at wins; smallest id breaks ties."""
-    precedence = {"active": 0, "candidate": 1, "conflicted": 2, "superseded": 3, "archived": 4}
-    eligible = [record for record in records if not is_record_expired(record, now)]
+    """Explicit-only conflict resolution (v0.9.1). A winner emerges only
+    through explicit declarations; implicit "newest wins" ordering is gone:
+      1. expired records never win (lazy expiry projection);
+      2. records whose own status is superseded or archived project out;
+      3. a record named in another eligible record's supersedes is excluded;
+      4. records linked by conflicts_with block each other;
+      5. exactly one contender remains -> winner; otherwise None."""
+    eligible = [
+        record for record in records
+        if not is_record_expired(record, now) and record.get("status") not in ("superseded", "archived")
+    ]
     if not eligible:
         return None
-    return sorted(
-        eligible,
-        key=lambda record: (
-            precedence.get(record.get("status") or "candidate", 1),
-            -(record.get("updated_at") or ""),
-            record.get("id") or "",
-        ),
-    )[0]
+    by_id = {record.get("id"): record for record in eligible if isinstance(record.get("id"), str)}
+    excluded = set()
+
+    def linked(record, field):
+        value = record.get(field)
+        if isinstance(value, str) and value and value in by_id and by_id[value] is not record:
+            return value
+        return None
+
+    for record in eligible:
+        target = linked(record, "supersedes")
+        if target is not None:
+            excluded.add(target)
+    for record in eligible:
+        target = linked(record, "conflicts_with")
+        if target is not None:
+            excluded.add(record.get("id"))
+            excluded.add(target)
+    contenders = [record for record in eligible if record.get("id") not in excluded]
+    return contenders[0] if len(contenders) == 1 else None
 
 
 def duplicate_error(record_id, first_path, second_path, phase, run_id=None):
@@ -691,7 +709,7 @@ def scan_duplicate_ids(directory_fd, file_iterator, phase, run_id=None):
             text = content.decode("utf-8")
         except UnicodeDecodeError:
             continue
-        record_id = parse_record_metadata(text, relative)
+        record_id, _values = parse_record_metadata(text, relative)
         if record_id is not None:
             if record_id in ids:
                 raise duplicate_error(record_id, ids[record_id], relative, phase, run_id)
@@ -702,6 +720,7 @@ def validate_staging_limits(staging_fd, manifest, phase="staging-diff", run_id=N
     baseline = {entry["path"]: entry for entry in manifest.get("entries", [])}
     observed = {}
     ids = {}
+    meta_by_path = {}
     for relative, entry_stat in walk_staging_tree(staging_fd):
         if entry_stat.st_size > MAX_FILE_BYTES:
             raise SyncError("file-too-large")
@@ -725,15 +744,32 @@ def validate_staging_limits(staging_fd, manifest, phase="staging-diff", run_id=N
             raise SyncError("binary-file")
         if relative == "summary.md" and len(content) > SUMMARY_BUDGET_BYTES:
             raise SyncError("summary-too-large")
-        record_id = parse_record_metadata(text, relative)
+        record_id, values = parse_record_metadata(text, relative)
         if record_id is not None:
             if record_id in ids:
                 raise duplicate_error(record_id, ids[record_id], relative, phase, run_id)
             ids[record_id] = relative
         observed[relative] = {"size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+        if record_id is not None:
+            meta_by_path[relative] = values
     added = [path for path in observed if path not in baseline and path_is_payload(path)]
     modified = [path for path in observed if path in baseline and baseline[path].get("sha256") != observed[path]["sha256"] and path_is_payload(path)]
     deleted = [path for path in baseline if path not in observed and path_is_payload(path)]
+    # v0.9.1: newly added handbook records must carry provenance — at least
+    # one of source_rollouts, source_session_digest, or source_hash. Existing
+    # (baseline) handbook records are exempt so legacy migration keeps
+    # working; the model's new consolidated knowledge must stay traceable.
+    for path in added:
+        if not path.startswith("handbook/") or not path.endswith(".md"):
+            continue
+        values = meta_by_path.get(path)
+        has_provenance = values is not None and (
+            bool(values.get("source_rollouts"))
+            or (isinstance(values.get("source_session_digest"), str) and bool(values["source_session_digest"]))
+            or (isinstance(values.get("source_hash"), str) and bool(values["source_hash"]))
+        )
+        if not has_provenance:
+            raise SyncError("missing-provenance", {"path": path, "phase": phase, "run_id": run_id} if run_id is not None else {"path": path, "phase": phase})
     if len(added) > MAX_ADDED_FILES:
         raise SyncError("too-many-files")
     changed_bytes = sum(observed[path]["size"] for path in added + modified)

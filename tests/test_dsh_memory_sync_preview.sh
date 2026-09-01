@@ -47,7 +47,7 @@ touch -t 200001010001 "$TEST_DSH_HOME/sessions/session.jsonl.zstd"
 cat > "$TEST_BIN/dsh" <<'EOF'
 #!/bin/zsh
 set -euo pipefail
-printf 'preview entry %s\n' "$(date +%s)" > handbook/preview-cli.md
+printf -- '---\nschema_version: 1\nid: preview-cli\ntype: observation\nsource_session_digest: stub-digest\n---\npreview entry %s\n' "$(date +%s)" > handbook/preview-cli.md
 exit 0
 EOF
 chmod +x "$TEST_BIN/dsh"
@@ -78,6 +78,9 @@ meta = json.load(open(sys.argv[1]))
 assert meta["preview_id"].endswith("a1b2c3d4"), meta
 assert meta["status"] == "pending", meta
 assert "handbook/preview-cli.md" in meta["changed_paths"], meta
+# v0.9.1: enrichment (handbook/) is an independent preview category.
+assert meta["enrichment_paths"] == ["handbook/preview-cli.md"], meta
+assert meta["consolidation_paths"] == [], meta
 assert meta["expires_at"] > meta["created_at"], meta
 PY
 
