@@ -1,7 +1,8 @@
 #!/bin/zsh
 # v0.3.1: the sync wrapper can capture a candidate diff as a pending preview
-# (--preview), apply a preview (--apply-preview), discard it
-# (--discard-preview), and emit a machine-parseable dry-run report (--json).
+# (--preview), apply a preview (--apply-preview), and discard it
+# (--discard-preview). v0.8.3: --dry-run is a deprecated alias of --scan-only
+# and no longer emits a diff report.
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -104,35 +105,30 @@ set -e
 test "$mutex_rc" != "0"
 grep -q -- "mutually exclusive" "$TEST_ROOT/mutex.out"
 
-# 5. --dry-run --json emits a single machine-parseable JSON document. After the
-#    apply above there are no new changes, so the report has empty lists but
-#    must still be valid JSON with the schema shape.
-run_sync --dry-run --json >"$TEST_ROOT/dry.json" 2>/dev/null
+# 5. --dry-run is a deprecated alias of --scan-only: it warns on stderr and
+#    emits the scan-only JSON contract (no diff report, no model run). The
+#    session above is still an unconsumed candidate because preview apply
+#    never advances the watermark.
+marker_before="$(stat -f %m "$TEST_MEMORY_ROOT/.last-sync")"
+run_sync --dry-run --json >"$TEST_ROOT/dry.json" 2>"$TEST_ROOT/dry.err"
+grep -q -- '--dry-run is deprecated' "$TEST_ROOT/dry.err"
 /usr/bin/python3 - "$TEST_ROOT/dry.json" <<'PY'
 import json
 import sys
 report = json.load(open(sys.argv[1]))
 assert report["ok"] is True, report
-assert report["dryRun"] is True, report
-assert isinstance(report["changedPaths"], list), report
-assert isinstance(report["added"], list), report
-assert isinstance(report["modified"], list), report
-assert isinstance(report["deleted"], list), report
-assert "candidateSessions" in report, report
+assert report["scanOnly"] is True, report
+assert report["watermark"] == "set", report
+assert report["candidateSessions"] == 1, report
+assert isinstance(report["candidates"], list) and len(report["candidates"]) == 1, report
 PY
 
-# 6. A fresh dry-run --json over a new session change reports the paths.
-rm -f "$TEST_MEMORY_ROOT/.last-sync"
-touch -t 200001010000 "$TEST_MEMORY_ROOT/.last-sync"
-: > "$TEST_DSH_HOME/sessions/session.jsonl.zstd"
-touch -t 200001010001 "$TEST_DSH_HOME/sessions/session.jsonl.zstd"
-run_sync --dry-run --json >"$TEST_ROOT/dry2.json" 2>/dev/null
-/usr/bin/python3 - "$TEST_ROOT/dry2.json" <<'PY'
-import json
-import sys
-report = json.load(open(sys.argv[1]))
-assert "handbook/preview-cli.md" in report["changedPaths"], report
-assert report["candidateSessions"] == 1, report
-PY
+# 6. The alias run stays side-effect free: no lock, journal, pending state,
+#    and the watermark is untouched.
+test ! -e "$TEST_MEMORY_ROOT/.sync/operation.lock"
+test ! -e "$TEST_MEMORY_ROOT/.sync/active-run.json"
+test ! -d "$TEST_MEMORY_ROOT/.sync/runs"
+test ! -e "$TEST_MEMORY_ROOT/.sync/pending-candidates.json"
+test "$(stat -f %m "$TEST_MEMORY_ROOT/.last-sync")" = "$marker_before"
 
 print -- "dsh-memory sync preview tests passed"

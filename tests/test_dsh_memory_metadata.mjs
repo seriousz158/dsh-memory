@@ -8,6 +8,8 @@ import {
   topicKey,
   resolveTopicConflict,
   isExpired,
+  auditRecords,
+  AUDIT_INVALID_METADATA_LIMIT,
 } from "../packages/dsh-memory/lib/memory-metadata.js";
 
 const canonical = `---
@@ -168,6 +170,75 @@ body`, "handbook/project.md");
   assert.equal(isExpired({ expires_at: "2020-01-01" }), true);
   assert.equal(isExpired({ expires_at: "2999-01-01" }), false);
   assert.equal(isExpired({}), false);
+}
+
+{
+  // v0.8.3: flow-style collections are rejected with a stable code; empty
+  // flow collections and canonical block lists stay valid.
+  assert.throws(
+    () => parseFrontMatter("---\nschema_version: 1\nid: x\ntags: [a, b]\n---\n", "handbook/x.md"),
+    (error) => error instanceof MetadataError && error.code === "flow-style-metadata",
+  );
+  assert.throws(
+    () => parseFrontMatter("---\nschema_version: 1\nid: x\nsource_rollouts: {a: 1}\n---\n", "handbook/x.md"),
+    (error) => error instanceof MetadataError && error.code === "flow-style-metadata",
+  );
+  const emptyFlow = parseFrontMatter("---\nschema_version: 1\nid: x\ntags: []\n---\n", "handbook/x.md");
+  assert.deepEqual(emptyFlow.tags, []);
+  const blockList = parseFrontMatter("---\nschema_version: 1\nid: x\ntags:\n  - a\n  - b\n---\n", "handbook/x.md");
+  assert.deepEqual(blockList.tags, ["a", "b"]);
+}
+
+{
+  // v0.8.3: the shared metadata audit reports valid/legacy/invalid records,
+  // duplicate ids, and truncates the invalid list to the documented limit.
+  const valid = (id) => `---\nschema_version: 1\nid: ${id}\n---\n正文\n`;
+  const audit = auditRecords([
+    { path: "handbook/a.md", content: valid("rec-a") },
+    { path: "handbook/b.md", content: valid("rec-b") },
+    { path: "handbook/legacy.md", content: "# plain markdown\nlegacy record\n" },
+    { path: "handbook/bad.md", content: "---\nschema_version: 2\nid: rec-bad\n---\n" },
+    { path: "handbook/flow.md", content: "---\nschema_version: 1\nid: rec-flow\ntags: [x]\n---\n" },
+    { path: "handbook/gone.md", content: null },
+    { path: "handbook/dup.md", content: valid("rec-a") },
+  ]);
+  assert.equal(audit.metadataValid, false);
+  assert.equal(audit.validMetadataCount, 3); // rec-a, rec-b, dup
+  assert.equal(audit.legacyMetadataCount, 1);
+  assert.equal(audit.invalidMetadataCount, 4); // bad + flow + gone + dup
+  assert.equal(audit.duplicateIdCount, 1);
+  assert.ok(audit.invalidMetadata.length <= AUDIT_INVALID_METADATA_LIMIT);
+  const byPath = new Map(audit.invalidMetadata.map((entry) => [entry.path, entry.code]));
+  assert.equal(byPath.get("handbook/bad.md"), "invalid-schema-version");
+  assert.equal(byPath.get("handbook/flow.md"), "flow-style-metadata");
+  assert.equal(byPath.get("handbook/gone.md"), "unreadable");
+  assert.equal(byPath.get("handbook/dup.md"), "duplicate-id");
+}
+
+{
+  // v0.8.3: a fully valid corpus audits clean; legacy records grandfather.
+  const audit = auditRecords([
+    { path: "handbook/a.md", content: "---\nschema_version: 1\nid: rec-a\n---\n" },
+    { path: "handbook/legacy.md", content: "# plain markdown\n" },
+  ]);
+  assert.equal(audit.metadataValid, true);
+  assert.equal(audit.validMetadataCount, 1);
+  assert.equal(audit.invalidMetadataCount, 0);
+  assert.equal(audit.legacyMetadataCount, 1);
+  assert.deepEqual(audit.invalidMetadata, []);
+}
+
+{
+  // v0.8.3: the invalid list is truncated to AUDIT_INVALID_METADATA_LIMIT
+  // while the count reflects every invalid record.
+  const flood = [];
+  for (let i = 0; i < AUDIT_INVALID_METADATA_LIMIT + 10; i += 1) {
+    flood.push({ path: `handbook/flood-${i}.md`, content: "---\nschema_version: 9\nid: x\n---\n" });
+  }
+  const audit = auditRecords(flood);
+  assert.equal(audit.metadataValid, false);
+  assert.equal(audit.invalidMetadataCount, AUDIT_INVALID_METADATA_LIMIT + 10);
+  assert.equal(audit.invalidMetadata.length, AUDIT_INVALID_METADATA_LIMIT);
 }
 
 console.log("dsh-memory metadata tests passed");

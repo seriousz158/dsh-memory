@@ -58,7 +58,7 @@ not expose the filesystem root or execute Git directly.
 
 ## Compatibility
 
-`v0.8.2` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
+`v0.8.3` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
 tested and locally integrated with a consistently pinned `0.1.0-rc.7` graph:
 
 | Component | Supported version |
@@ -103,7 +103,7 @@ Clone the repository and install its reproducible development/runtime dependenci
 ```zsh
 git clone https://github.com/seriousz158/dsh-memory.git
 cd dsh-memory
-# Use the pinned runtime that this v0.8.2 integration was tested with.
+# Use the pinned runtime that this v0.8.3 integration was tested with.
 npm install --global @deepseek-ai/dsh@0.1.0-rc.7
 dsh --version
 npm ci --ignore-scripts

@@ -72,25 +72,41 @@ harden_initialized_repository() {
   chmod 700 "$MEMORY_ROOT/scripts/filter_session.py"
 }
 
-refresh_helper_script() {
-  local helper_path="$MEMORY_ROOT/scripts/filter_session.py"
-  local helper_status
+refresh_managed_templates() {
+  # Managed readonly files: the host owns them; the model never edits them.
+  # For each template: identical checksum is a no-op; a dirty (uncommitted)
+  # live copy fails closed; otherwise the file is replaced atomically and a
+  # single commit records only the changed managed files.
+  typeset -a managed_relpaths
+  managed_relpaths=(README.md .sync/.gitignore scripts/filter_session.py)
+  typeset -a changed
+  changed=()
+  local relpath
+  local live_path
+  local template_path
+  local entry_status
   local temporary_path
-
-  helper_status="$($git_bin -C "$MEMORY_ROOT" status --porcelain --untracked-files=all -- scripts/filter_session.py)"
-  [[ -z "$helper_status" ]] || die "refusing to refresh a dirty memory helper"
-  cmp -s "$TEMPLATE_ROOT/scripts/filter_session.py" "$helper_path" && return 0
-
-  temporary_path="$(/usr/bin/mktemp "$MEMORY_ROOT/scripts/.filter_session.py.XXXXXX")"
-  if ! "$install_bin" -m 700 "$TEMPLATE_ROOT/scripts/filter_session.py" "$temporary_path"; then
-    rm -f -- "$temporary_path"
-    die "could not stage the refreshed memory helper"
-  fi
-  mv -f -- "$temporary_path" "$helper_path"
-  chmod 700 "$helper_path"
-  "$git_bin" -C "$MEMORY_ROOT" add -- scripts/filter_session.py
-  "$git_bin" -C "$MEMORY_ROOT" commit --quiet --only -m "Refresh helper scripts" -- scripts/filter_session.py \
-    || die "could not commit the refreshed memory helper"
+  for relpath in "${managed_relpaths[@]}"; do
+    live_path="$MEMORY_ROOT/$relpath"
+    template_path="$TEMPLATE_ROOT/$relpath"
+    entry_status="$($git_bin -C "$MEMORY_ROOT" status --porcelain --untracked-files=all -- "$relpath")"
+    [[ -z "$entry_status" ]] || die "refusing to refresh a dirty managed template: $relpath"
+    cmp -s "$template_path" "$live_path" && continue
+    temporary_path="$(/usr/bin/mktemp "$MEMORY_ROOT/.$(basename -- "$relpath").refresh.XXXXXX")"
+    if ! "$install_bin" -m 600 "$template_path" "$temporary_path"; then
+      rm -f -- "$temporary_path"
+      die "could not stage the refreshed managed template: $relpath"
+    fi
+    mv -f -- "$temporary_path" "$live_path"
+    chmod 600 "$live_path"
+    changed+=("$relpath")
+  done
+  (( ${#changed} == 0 )) && return 0
+  local helper_path="$MEMORY_ROOT/scripts/filter_session.py"
+  [[ -f "$helper_path" ]] && chmod 700 "$helper_path"
+  "$git_bin" -C "$MEMORY_ROOT" add -- "${changed[@]}"
+  "$git_bin" -C "$MEMORY_ROOT" commit --quiet --only -m "Refresh managed memory templates" -- "${changed[@]}" \
+    || die "could not commit the refreshed managed templates"
 }
 
 if [[ -e "$MEMORY_ROOT" || -L "$MEMORY_ROOT" ]]; then
@@ -111,7 +127,7 @@ if [[ -e "$MEMORY_ROOT" || -L "$MEMORY_ROOT" ]]; then
       die "memory .sync/.gitignore is unsafe"
     fi
     validate_initialized_repository || die "memory root is an incomplete DSH memory repository"
-    refresh_helper_script
+    refresh_managed_templates
     harden_initialized_repository || die "could not restore private memory repository permissions"
     print -- "$root_real"
     exit 0

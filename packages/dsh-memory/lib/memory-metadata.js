@@ -105,6 +105,12 @@ function parseBlock(block) {
     const key = line.slice(0, colon).trim();
     const value = line.slice(colon + 1).trim();
     if (key === "") throw new MetadataError("invalid-metadata", "front matter has an empty key");
+    // Canonical records use block lists (tags:\n  - item). Flow-style
+    // collections are rejected with a stable code so the staging validator and
+    // the metadata audit report the same, actionable diagnosis.
+    if ((value.startsWith("[") && value !== "[]") || (value.startsWith("{") && value !== "{}")) {
+      throw new MetadataError("flow-style-metadata", `${key} must use a canonical block list, not a flow collection`);
+    }
     currentKey = key;
     if (value === "" || value.startsWith("|") || value.startsWith(">")) {
       // A nested mapping or block scalar is not part of the record contract.
@@ -277,4 +283,77 @@ export function resolveTopicConflict(records, now = Date.now()) {
     if (dateDiff !== 0) return dateDiff;
     return String(left.id).localeCompare(String(right.id));
   })[0];
+}
+
+export const AUDIT_INVALID_METADATA_LIMIT = 20;
+
+/**
+ * Shared metadata audit over structured records (schema_version 1).
+ *
+ * Scans every record-shaped payload document and reports:
+ *   - per-file validation failures (schema, fields, duplicate ids);
+ *   - legacy records (no front matter) which are counted but never invalid;
+ *   - duplicate structured ids across the corpus.
+ *
+ * The audit is report-only: callers decide whether invalid metadata blocks a
+ * write path (staging validation stays fail-closed) or only surfaces in
+ * status/health and search warnings. Legacy records grandfather as valid.
+ *
+ * @param {Array<{ path: string, content: string }>} records
+ * @returns {{ metadataValid: boolean, validMetadataCount: number, invalidMetadataCount: number, legacyMetadataCount: number, duplicateIdCount: number, invalidMetadata: Array<{ path: string, code: string }> }}
+ */
+export function auditRecords(records) {
+  let validCount = 0;
+  let legacyCount = 0;
+  const invalid = [];
+  let invalidCount = 0;
+  const seenIds = new Map();
+  let duplicateIdCount = 0;
+  for (const record of records) {
+    if (record.content === null || record.content === undefined) {
+      // The file could not be read at all; that is an invalid record, not a
+      // legacy one, so it surfaces in the audit instead of disappearing.
+      invalidCount += 1;
+      if (invalid.length < AUDIT_INVALID_METADATA_LIMIT) invalid.push({ path: record.path, code: "unreadable" });
+      continue;
+    }
+    if (!hasRecordFrontMatter(record.content)) {
+      legacyCount += 1;
+      continue;
+    }
+    try {
+      const metadata = parseFrontMatter(record.content, record.path);
+      if (metadata === null) {
+        // Not a record path (defensive; callers pre-filter).
+        continue;
+      }
+      validCount += 1;
+      const first = seenIds.get(metadata.id);
+      if (first !== undefined) {
+        duplicateIdCount += 1;
+        invalidCount += 1;
+        if (invalid.length < AUDIT_INVALID_METADATA_LIMIT) {
+          invalid.push({ path: record.path, code: "duplicate-id" });
+        }
+      } else {
+        seenIds.set(metadata.id, record.path);
+      }
+    } catch (error) {
+      const code = error instanceof MetadataError ? error.code : "invalid-metadata";
+      invalidCount += 1;
+      if (invalid.length < AUDIT_INVALID_METADATA_LIMIT) invalid.push({ path: record.path, code });
+    }
+  }
+  return {
+    metadataValid: invalidCount === 0,
+    validMetadataCount: validCount,
+    invalidMetadataCount: invalidCount,
+    legacyMetadataCount: legacyCount,
+    duplicateIdCount,
+    invalidMetadata: invalid,
+  };
+}
+
+function hasRecordFrontMatter(content) {
+  return content.startsWith("---\n") || content.startsWith("---\r\n");
 }

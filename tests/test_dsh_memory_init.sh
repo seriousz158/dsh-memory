@@ -104,24 +104,67 @@ DSH_HOME="$REFRESH_HOME" "$INITIALIZER" >/dev/null
 REFRESH_MEMORY_ROOT="$REFRESH_HOME/storages/memory"
 REFRESH_TEMPLATE="$FIXTURE_REPO/packages/dsh-memory/templates/scripts/filter_session.py"
 REFRESH_HELPER="$REFRESH_MEMORY_ROOT/scripts/filter_session.py"
+REFRESH_README_TEMPLATE="$FIXTURE_REPO/packages/dsh-memory/templates/README.md"
+REFRESH_README="$REFRESH_MEMORY_ROOT/README.md"
+REFRESH_GITIGNORE_TEMPLATE="$FIXTURE_REPO/packages/dsh-memory/templates/.sync/.gitignore"
+REFRESH_GITIGNORE="$REFRESH_MEMORY_ROOT/.sync/.gitignore"
 print -r -- '# refresh-marker-one' >> "$REFRESH_TEMPLATE"
 refresh_head_before="$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)"
 DSH_HOME="$REFRESH_HOME" "$INITIALIZER" >/dev/null
 test "$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)" != "$refresh_head_before"
-test "$(git -C "$REFRESH_MEMORY_ROOT" log -1 --format=%s)" = "Refresh helper scripts"
+test "$(git -C "$REFRESH_MEMORY_ROOT" log -1 --format=%s)" = "Refresh managed memory templates"
 test "$(git -C "$REFRESH_MEMORY_ROOT" diff-tree --no-commit-id --name-only -r HEAD)" = "scripts/filter_session.py"
 cmp -s "$REFRESH_TEMPLATE" "$REFRESH_HELPER"
 refresh_head_after="$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)"
 DSH_HOME="$REFRESH_HOME" "$INITIALIZER" >/dev/null
 test "$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)" = "$refresh_head_after"
 
+# All managed templates (README, .sync/.gitignore, helper) refresh in a
+# single "Refresh managed memory templates" commit listing exactly the
+# changed files.
+print -r -- '# refresh-readme-marker' >> "$REFRESH_README_TEMPLATE"
+print -r -- '# refresh-gitignore-marker' >> "$REFRESH_GITIGNORE_TEMPLATE"
+DSH_HOME="$REFRESH_HOME" "$INITIALIZER" >/dev/null
+test "$(git -C "$REFRESH_MEMORY_ROOT" log -1 --format=%s)" = "Refresh managed memory templates"
+changed_files="$(git -C "$REFRESH_MEMORY_ROOT" diff-tree --no-commit-id --name-only -r HEAD | sort)"
+test "$changed_files" = "$(printf '.sync/.gitignore\nREADME.md')"
+cmp -s "$REFRESH_README_TEMPLATE" "$REFRESH_README"
+cmp -s "$REFRESH_GITIGNORE_TEMPLATE" "$REFRESH_GITIGNORE"
+refresh_head_after="$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)"
+DSH_HOME="$REFRESH_HOME" "$INITIALIZER" >/dev/null
+test "$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)" = "$refresh_head_after"
+
+# A dirty (uncommitted) managed template fails closed for every managed file.
 print -r -- '# uncommitted-helper-change' >> "$REFRESH_HELPER"
-print -r -- '# refresh-marker-two' >> "$REFRESH_TEMPLATE"
 if DSH_HOME="$REFRESH_HOME" "$INITIALIZER" >/dev/null 2>&1; then
   print -u2 -- "initializer overwrote a dirty helper"
   exit 1
 fi
 grep -q -- '# uncommitted-helper-change' "$REFRESH_HELPER"
+test "$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)" = "$refresh_head_after"
+git -C "$REFRESH_MEMORY_ROOT" checkout -- scripts/filter_session.py
+
+print -r -- '# uncommitted-readme-change' >> "$REFRESH_README"
+if DSH_HOME="$REFRESH_HOME" "$INITIALIZER" >/dev/null 2>&1; then
+  print -u2 -- "initializer overwrote a dirty README"
+  exit 1
+fi
+grep -q -- '# uncommitted-readme-change' "$REFRESH_README"
+test "$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)" = "$refresh_head_after"
+git -C "$REFRESH_MEMORY_ROOT" checkout -- README.md
+
+print -r -- '# uncommitted-gitignore-change' >> "$REFRESH_GITIGNORE"
+if DSH_HOME="$REFRESH_HOME" "$INITIALIZER" >/dev/null 2>&1; then
+  print -u2 -- "initializer overwrote a dirty .sync/.gitignore"
+  exit 1
+fi
+grep -q -- '# uncommitted-gitignore-change' "$REFRESH_GITIGNORE"
+test "$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)" = "$refresh_head_after"
+git -C "$REFRESH_MEMORY_ROOT" checkout -- .sync/.gitignore
+
+# After reverting every dirty change, the initializer succeeds again and the
+# live copies match the (now stale) templates without a new commit.
+DSH_HOME="$REFRESH_HOME" "$INITIALIZER" >/dev/null
 test "$(git -C "$REFRESH_MEMORY_ROOT" rev-parse HEAD)" = "$refresh_head_after"
 
 print "dsh-memory initializer tests passed"
