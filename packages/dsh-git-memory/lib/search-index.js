@@ -92,7 +92,10 @@ function ftsMatchOr(terms) {
 }
 
 function ftsMatchPlain(terms) {
-  return terms.join(" OR ");
+  // Quote every token before handing it to SQLite's MATCH parser. Bare
+  // hyphenated identifiers (for example, "pending-candidates") are parsed as
+  // expressions and can be reported as an unknown column instead of a term.
+  return terms.map((term) => `"${term.replaceAll('"', '""')}"`).join(" OR ");
 }
 
 async function ensureIndexGitExcludes(root) {

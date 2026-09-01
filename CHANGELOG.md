@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-09-01
+
+### Fixed
+
+- Quote FTS5 search terms before constructing `MATCH` expressions so
+  hyphenated identifiers (for example, `pending-candidates`) stay on the
+  hybrid index path instead of being parsed as SQLite expressions.
+- Add a regression case to the retrieval evaluation for hyphenated queries.
+
+### Distribution
+
+- Distributed through GitHub source installs and GitHub Releases; not
+  published to npm.
+
 ## [0.9.1] - 2026-09-01
 
 ### Added

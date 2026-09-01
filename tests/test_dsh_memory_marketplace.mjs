@@ -11,7 +11,7 @@ const manifest = JSON.parse(await readFile(join(project, "package.json"), "utf8"
 const patch = await readFile(join(project, "packages/dsh-git-memory/cordis.patch.yml"), "utf8");
 
 assert.equal(manifest.name, "dsh-git-memory");
-assert.equal(manifest.version, "0.9.1");
+assert.equal(manifest.version, "0.9.2");
 assert.notEqual(manifest.private, true);
 assert.equal(manifest.main, "./packages/dsh-git-memory/lib/index.js");
 assert.equal(manifest.exports["."], "./packages/dsh-git-memory/lib/index.js");
