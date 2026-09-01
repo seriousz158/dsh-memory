@@ -24,6 +24,13 @@ import { parseFrontMatter, isExpired, topicKey, auditRecords, AUDIT_INVALID_META
 import { legacyId, legacyRecordSummary, migratedContent, scanLegacyRecords } from "./legacy-migration.js";
 import { contentHashOf, formatCitation, readUsage, recordUsage, sortByUsage, usageMetadata } from "./memory-usage.js";
 import { SyncTransaction } from "./sync-transaction.js";
+import {
+  buildSearchIndex,
+  closeSearchIndex,
+  openSearchIndex,
+  querySearchIndex,
+  stampOf,
+} from "./search-index.js";
 
 const execFile = promisify(execFileCallback);
 const NS = settingsNamespace("memory");
@@ -42,6 +49,45 @@ const PYTHON_CANDIDATES = Object.freeze([
   "python3",
 ].filter(Boolean));
 const Config = z.object({ enabled: z.boolean().default(true) });
+
+/**
+ * v0.9.0 hybrid ranking: reciprocal-rank fusion over the raw lexical scan
+ * (weight 2.0), the FTS match rank and token coverage (1.0 each), and the
+ * usage order (0.25). Records containing the full query as an exact
+ * substring form a priority tier above the fused order.
+ */
+function fuseSearchResults(candidates, usage, query) {
+  const usageOrder = sortByUsage(candidates, usage);
+  const rawRank = new Map(candidates.map((entry, index) => [entry.path, index + 1]));
+  const usageRank = new Map(usageOrder.map((entry, index) => [entry.path, index + 1]));
+  const coverageRankEntries = candidates
+    .filter((entry) => (entry.__coverage ?? 0) > 0)
+    .sort((left, right) => (right.__coverage - left.__coverage)
+      || String(left.path).localeCompare(String(right.path)));
+  const coverageRank = new Map(coverageRankEntries.map((entry, index) => [entry.path, index + 1]));
+  const queryLower = String(query).trim().toLowerCase();
+  for (const entry of candidates) {
+    const ftsRank = entry.__ftsRank;
+    const covRank = coverageRank.get(entry.path);
+    const componentRaw = 2.0 / (60 + (rawRank.get(entry.path) ?? candidates.length));
+    const componentFts = ftsRank === undefined ? 0 : 1.0 / (60 + ftsRank);
+    const componentCoverage = covRank === undefined ? 0 : 1.0 / (60 + covRank);
+    const componentUsage = 0.25 / (60 + (usageRank.get(entry.path) ?? candidates.length));
+    entry.score_components = {
+      raw: componentRaw,
+      fts: componentFts,
+      coverage: componentCoverage,
+      usage: componentUsage,
+    };
+    entry.score = componentRaw + componentFts + componentCoverage + componentUsage;
+    entry.__tier = queryLower.length > 0 && typeof entry.__bodyLower === "string"
+      && entry.__bodyLower.includes(queryLower) ? 0 : 1;
+  }
+  return [...candidates].sort((left, right) => left.__tier - right.__tier
+    || right.score - left.score
+    || String(left.path).localeCompare(String(right.path)));
+}
+
 // Single-writer contract: ordinary sessions treat the memory repository as
 // read-only. Persistence happens exclusively through the periodic
 // transactional sync (dsh-memory-sync), which stages model output, verifies
@@ -846,22 +892,26 @@ export class MemoryRepository {
     }
   }
 
-  async collectSearchResults(root, query, includeArchive = false, usage = undefined, warnings = undefined) {
-    const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
-    if (tokens.length === 0) throw memoryError("search-invalid-request");
-    const results = [];
+  /**
+   * v0.9.0: one pass over the payload produces the raw lexical ranking AND
+   * the record descriptors the derived index is built from. All eligible
+   * records (including archive) are returned so the index always covers the
+   * full payload; scope filtering happens on the fused candidates. Invalid
+   * metadata is excluded from results but never silently dropped: the caller
+   * returns it as warnings next to the results.
+   */
+  async scanRecords(root, usage) {
+    const records = [];
+    const warnings = [];
     const files = await this.payloadFiles(root);
     for (const file of files) {
       if (file === "summary.md" || !/\.md$/.test(file)) continue;
-      if (!includeArchive && file.startsWith("archive/")) continue;
       const content = await readFileSafe(join(root, file), "utf8").catch(() => "");
       let metadata = null;
       try {
         metadata = parseFrontMatter(content, file);
       } catch (error) {
-        // Invalid metadata is excluded from results but never silently
-        // dropped: the caller returns it as a warning next to the results.
-        warnings?.push({ path: file, code: error instanceof MetadataError ? error.code : "invalid-metadata" });
+        warnings.push({ path: file, code: error instanceof MetadataError ? error.code : "invalid-metadata" });
         continue;
       }
       if (metadata !== null && isExpired(metadata)) continue;
@@ -876,33 +926,148 @@ export class MemoryRepository {
         metadata?.source_hash ?? "",
         body,
       ].join("\n").toLowerCase();
-      let score = 0;
-      for (const token of tokens) {
-        if (searchable.includes(token)) score += 1;
-        if (recordId.toLowerCase().includes(token)) score += 3;
-        if ((metadata?.type ?? "").toLowerCase() === token) score += 2;
-        if (body.toLowerCase().includes(token)) score += 1;
-      }
-      if (score > 0) {
-        const lower = body.toLowerCase();
-        const first = lower.indexOf(tokens[0]);
-        const snippet = first === -1 ? body.slice(0, 160) : body.slice(Math.max(0, first - 40), first + 120).replace(/\s+/g, " ").trim();
-        results.push({
-          path: file,
-          score,
-          id: recordId,
-          type: metadata?.type ?? null,
-          updated_at: metadata?.updated_at ?? null,
-          content_hash: usageInfo.content_hash ?? contentHashOf(content),
-          generation: usageInfo.generation,
-          source_rollouts: metadata?.source_rollouts ?? [],
-          source_session_digest: metadata?.source_session_digest ?? null,
-          snippet,
-          citation: formatCitation(file, recordId),
-        });
-      }
+      const bodyLower = body.toLowerCase();
+      records.push({
+        path: file,
+        id: recordId,
+        type: metadata?.type ?? null,
+        tags: metadata?.tags ?? [],
+        updatedAt: metadata?.updated_at ?? null,
+        rawBody: body,
+        searchable,
+        content_hash: usageInfo.content_hash ?? contentHashOf(content),
+        generation: usageInfo.generation,
+        source_rollouts: metadata?.source_rollouts ?? [],
+        source_session_digest: metadata?.source_session_digest ?? null,
+        citation: formatCitation(file, recordId),
+        __bodyLower: bodyLower,
+        __searchable: searchable,
+      });
     }
-    return results.sort((left, right) => right.score - left.score || String(left.path).localeCompare(String(right.path)));
+    return { records, warnings };
+  }
+
+  /** Raw lexical score of one record against the tokenized query. */
+  rawLexicalScore(record, tokens) {
+    let score = 0;
+    for (const token of tokens) {
+      if (record.__searchable.includes(token)) score += 1;
+      if (record.id.toLowerCase().includes(token)) score += 3;
+      if ((record.type ?? "").toLowerCase() === token) score += 2;
+      if (record.__bodyLower.includes(token)) score += 1;
+    }
+    return score;
+  }
+
+  /** Backwards-compatible raw scan: scored, sorted, archive-filtered. */
+  async collectSearchResults(root, query, includeArchive = false, usage = undefined, warnings = undefined) {
+    const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
+    if (tokens.length === 0) throw memoryError("search-invalid-request");
+    const { records, warnings: scanWarnings } = await this.scanRecords(root, usage);
+    const results = [];
+    for (const record of records) {
+      const score = this.rawLexicalScore(record, tokens);
+      if (score <= 0) continue;
+      const first = record.__bodyLower.indexOf(tokens[0]);
+      const snippet = first === -1 ? record.rawBody.slice(0, 160) : record.rawBody.slice(Math.max(0, first - 40), first + 120).replace(/\s+/g, " ").trim();
+      results.push({
+        path: record.path,
+        score,
+        id: record.id,
+        type: record.type,
+        updated_at: record.updatedAt,
+        content_hash: record.content_hash,
+        generation: record.generation,
+        source_rollouts: record.source_rollouts,
+        source_session_digest: record.source_session_digest,
+        snippet,
+        citation: record.citation,
+      });
+    }
+    results.sort((left, right) => right.score - left.score || String(left.path).localeCompare(String(right.path)));
+    if (warnings !== undefined) warnings.push(...(includeArchive ? scanWarnings : scanWarnings.filter((w) => !w.path.startsWith("archive/"))));
+    return includeArchive ? results : results.filter((entry) => !entry.path.startsWith("archive/"));
+  }
+
+  /**
+   * v0.9.0 hybrid retrieval shared by memory_search and memory_context:
+   * raw scan candidates fused with the derived SQLite index signals
+   * (FTS rank + token coverage) and usage order; exact-substring hits form
+   * the top tier. Falls back to the pure scan ranking — marked degraded —
+   * when the index is unavailable.
+   */
+  async retrieve(root, query, scope, usage, warnings) {
+    const inScope = scope === "archive"
+      ? (path) => path.startsWith("archive/")
+      : scope === "active"
+        ? (path) => !path.startsWith("archive/")
+        : () => true;
+    const { records, warnings: scanWarnings } = await this.scanRecords(root, usage);
+    warnings.push(...scanWarnings.filter((warning) => inScope(warning.path)));
+    const candidates = records.filter((record) => inScope(record.path));
+    const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
+    if (tokens.length === 0) throw memoryError("search-invalid-request");
+    for (const record of candidates) {
+      const score = this.rawLexicalScore(record, tokens);
+      record.__rawScore = score;
+      const first = record.__bodyLower.indexOf(tokens[0]);
+      record.__snippet = first === -1 ? record.rawBody.slice(0, 160) : record.rawBody.slice(Math.max(0, first - 40), first + 120).replace(/\s+/g, " ").trim();
+    }
+    let retrieval = { mode: "scan", indexState: "degraded", stamp: null };
+    let fts = null;
+    try {
+      const stamp = stampOf(await this.payloadTree("HEAD"));
+      let handle = null;
+      let needsBuild = true;
+      let indexState = "rebuilt";
+      try {
+        handle = await openSearchIndex(root, stamp);
+        if (handle !== null && handle.stampMatches) {
+          needsBuild = false;
+          indexState = "fresh";
+        } else if (handle !== null) {
+          closeSearchIndex(handle);
+          handle = null;
+        }
+      } catch {
+        handle = null;
+      }
+      if (needsBuild) {
+        await buildSearchIndex(root, records, stamp, scanWarnings);
+        handle = await openSearchIndex(root, stamp);
+        if (handle === null) throw new Error("search-index missing after build");
+      }
+      try {
+        fts = querySearchIndex(handle.db, query);
+      } finally {
+        closeSearchIndex(handle);
+      }
+      retrieval = { mode: "hybrid", indexState, stamp };
+    } catch {
+      fts = null;
+      retrieval = { mode: "scan", indexState: "degraded", stamp: null };
+    }
+    for (const record of candidates) {
+      record.__ftsRank = fts?.ranksByPath.get(record.path);
+      record.__coverage = fts?.coverageByPath.get(record.path) ?? 0;
+    }
+    const scored = candidates.filter((record) => record.__rawScore > 0);
+    const ranked = fuseSearchResults(scored, usage, query);
+    const candidates_ = ranked.map((entry) => ({
+      path: entry.path,
+      score: entry.score,
+      id: entry.id,
+      type: entry.type,
+      updated_at: entry.updatedAt,
+      content_hash: entry.content_hash,
+      generation: entry.generation,
+      source_rollouts: entry.source_rollouts,
+      source_session_digest: entry.source_session_digest,
+      snippet: entry.__snippet,
+      citation: entry.citation,
+      score_components: entry.score_components,
+    }));
+    return { candidates: candidates_, recordsForIndex: records, retrieval };
   }
 
   /**
@@ -921,9 +1086,8 @@ export class MemoryRepository {
     try {
       const usage = await readUsage(root);
       const warnings = [];
-      const results = (await this.collectSearchResults(root, request.query, scope !== "active", usage, warnings))
-        .filter((entry) => scope !== "archive" || entry.path.startsWith("archive/"));
-      return success({ query: request.query, count: results.length, results: results.slice(0, limit), warnings });
+      const { candidates, retrieval } = await this.retrieve(root, request.query, scope, usage, warnings);
+      return success({ query: request.query, count: candidates.length, results: candidates.slice(0, limit), warnings, retrieval });
     } catch (error) {
       return failure(error?.memoryCode ?? "search-failed");
     }
@@ -947,8 +1111,11 @@ export class MemoryRepository {
       const usage = await readUsage(root);
       const warnings = [];
       let candidates;
+      let retrieval = null;
       if (hasQuery) {
-        candidates = sortByUsage(await this.collectSearchResults(root, request.query, scope !== "active", usage, warnings), usage).slice(0, limit);
+        const fused = await this.retrieve(root, request.query, scope, usage, warnings);
+        candidates = fused.candidates.slice(0, limit);
+        retrieval = fused.retrieval;
       } else {
         candidates = [];
         for (const file of await this.payloadFiles(root)) {
@@ -1000,7 +1167,7 @@ export class MemoryRepository {
           prior_usage_count: metadata.prior_usage_count,
           source_rollouts: entry.source_rollouts ?? [],
           source_session_digest: entry.source_session_digest ?? null,
-          ...(hasQuery ? { score: entry.score } : {}),
+          ...(hasQuery ? { score: entry.score, score_components: entry.score_components } : {}),
         });
       }
       return success({
@@ -1008,6 +1175,7 @@ export class MemoryRepository {
         count: records.length,
         records,
         warnings,
+        ...(hasQuery ? { retrieval } : {}),
       });
     } catch (error) {
       return failure(error?.memoryCode ?? "context-failed");

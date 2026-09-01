@@ -16,6 +16,7 @@ const hostFiles = [
   "memory-tree.js",
   "memory-usage.js",
   "operation-lock.js",
+  "search-index.js",
   "safe-clear.py",
   "sync-apply.py",
   "sync-transaction.js",

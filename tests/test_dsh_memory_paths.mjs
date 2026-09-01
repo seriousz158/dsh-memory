@@ -37,6 +37,10 @@ await cp(
   join(project, "packages/dsh-memory/lib/sync-transaction.js"),
   join(fixture, "dsh-memory", "lib", "sync-transaction.js"),
 );
+await cp(
+  join(project, "packages/dsh-memory/lib/search-index.js"),
+  join(fixture, "dsh-memory", "lib", "search-index.js"),
+);
 await writeFile(join(fixture, "dsh-memory", "package.json"), '{"type":"module"}\n');
 
 const stubs = {

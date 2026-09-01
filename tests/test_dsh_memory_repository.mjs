@@ -80,7 +80,9 @@ We chose TypeScript for the codegen pipeline.\n`);
   assert.equal(hit.value.results[0].path, "handbook/project.md");
   assert.equal(hit.value.results[0].id, "project/codegen");
   assert.equal(hit.value.results[0].citation, "[source: handbook/project.md · id: project/codegen]");
-  assert.ok(hit.value.results[0].score >= 1);
+  // v0.9: score is the fused RRF contribution sum; components are exposed.
+  assert.ok(hit.value.results[0].score > 0);
+  assert.ok(hit.value.results[0].score_components !== undefined);
   const miss = await service.search({ query: "nonexistent-term" });
   assert.equal(miss.ok, true);
   assert.equal(miss.value.count, 0);

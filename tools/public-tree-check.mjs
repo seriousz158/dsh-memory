@@ -58,6 +58,7 @@ const allowed = new Set([
   "packages/dsh-memory/lib/memory-tree.js",
   "packages/dsh-memory/lib/operation-lock.js",
   "packages/dsh-memory/lib/safe-clear.py",
+  "packages/dsh-memory/lib/search-index.js",
   "packages/dsh-memory/lib/sync-apply.py",
   "packages/dsh-memory/lib/sync-transaction.js",
   "packages/dsh-memory/templates/README.md",
@@ -72,6 +73,7 @@ const allowed = new Set([
   "packages/dsh-git-memory/lib/memory-usage.js",
   "packages/dsh-git-memory/lib/operation-lock.js",
   "packages/dsh-git-memory/lib/safe-clear.py",
+  "packages/dsh-git-memory/lib/search-index.js",
   "packages/dsh-git-memory/lib/sync-apply.py",
   "packages/dsh-git-memory/lib/sync-transaction.js",
   "packages/dsh-memory-ui/package.json",
@@ -100,6 +102,7 @@ const allowed = new Set([
   "tests/test_dsh_memory_sync_transaction.mjs",
   "tests/test_dsh_memory_runtime.sh",
   "tests/test_dsh_memory_sync_disabled.sh",
+  "tests/test_dsh_memory_retrieval_eval.mjs",
   "tests/test_dsh_memory_sync_dry_run.sh",
   "tests/test_dsh_memory_sync_env.sh",
   "tests/test_dsh_memory_sync_chunks.sh",
@@ -243,9 +246,9 @@ try {
     }
 
     const expectedManifestVersions = {
-      "package.json": "0.8.4",
-      "packages/dsh-memory/package.json": "0.8.4",
-      "packages/dsh-memory-ui/package.json": "0.8.4",
+      "package.json": "0.9.0",
+      "packages/dsh-memory/package.json": "0.9.0",
+      "packages/dsh-memory-ui/package.json": "0.9.0",
     };
     for (const manifestPath of Object.keys(expectedManifestVersions)) {
       const content = readSnapshotText(snapshot, manifestPath);
