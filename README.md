@@ -46,7 +46,11 @@ for historical changes.
 - When enabled, a bounded and explicitly untrusted `summary.md` snapshot is
   available to the model (12 KiB maximum).
 - `memory.search()` and `memory.context()` provide local, bounded retrieval
-  with source citations and usage-aware deterministic ordering.
+  with source citations and usage-aware deterministic ordering. Retrieval is
+  hybrid: a derived SQLite index (FTS5 trigram + CJK-bigram/word terms, stored
+  at `.sync/search-index.sqlite` with restrictive permissions) is fused with
+  lexical scoring and exact-substring precedence, and transparently falls back
+  to a pure scan when the index is missing, stale, or corrupt.
 - Read usage is stored as private metadata in `.sync/usage.json`; transcripts,
   prompts, credentials, and memory content are not written to journals.
 
@@ -58,7 +62,7 @@ not expose the filesystem root or execute Git directly.
 
 ## Compatibility
 
-`v0.8.4` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
+`v0.9.0` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
 tested and locally integrated with a consistently pinned `0.1.0-rc.7` graph:
 
 | Component | Supported version |

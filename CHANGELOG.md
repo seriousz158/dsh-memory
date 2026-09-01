@@ -4,6 +4,38 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-01
+
+### Added
+
+- Hybrid retrieval pipeline: `memory.search()` and `memory.context()` now fuse
+  a full-corpus lexical scan with a derived SQLite full-text index. Raw
+  lexical rank, FTS rank, coverage rank, and usage rank are combined with
+  reciprocal-rank fusion (k=60, weights raw 2.0 / FTS 1.0 / coverage 1.0 /
+  usage 0.25), and exact-substring matches keep a dedicated precedence tier
+  above all fused scoring.
+- Derived search index at `.sync/search-index.sqlite` (permission `0600`):
+  a `content_fts` table with the trigram tokenizer (CJK runs of 3+ characters
+  and latin words of 3+ characters) plus a `terms_fts` table with `unicode61`
+  terms over English words and CJK bigrams. The index is stamped with
+  `sha256(payloadTree(HEAD))`, built into a temporary database that is atomically
+  renamed into place, and kept out of the working tree via `.git/info/exclude`.
+- Retrieval API metadata: responses gain `retrieval`
+  (`mode`: `hybrid` or `scan`; `indexState`: `fresh`, `rebuilt`, or
+  `degraded`; `stamp`), and results gain `score` plus `score_components`
+  (`raw`, `fts`, `coverage`, `usage` contributions) in both search and
+  query-aware context responses.
+- Transparent degradation: when the index is missing, stale, or corrupt it is
+  rebuilt automatically; if rebuilding fails (for example an unwritable
+  `.sync` directory) retrieval falls back to the pure scan with
+  `indexState: "degraded"` and identical results.
+- Retrieval evaluation suite (`tests/test_dsh_memory_retrieval_eval.mjs`):
+  52 labeled queries over a 26-record mixed Chinese/English corpus asserting
+  top-1/top-3 recall, scope filtering, exact-tier precedence over usage
+  reinforcement, usage-unchanged invariants, index permissions, working-tree
+  cleanliness,   stamp invalidation on new commits, and corrupt-index
+  degradation.
+
 ## [0.8.4] - 2026-09-01
 
 ### Added
