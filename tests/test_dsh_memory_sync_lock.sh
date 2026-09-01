@@ -51,7 +51,7 @@ touch -t 200001010001 "$TEST_DSH_HOME/sessions/session.jsonl.zstd"
 cat > "$TEST_BIN/dsh" <<'EOF'
 #!/bin/zsh
 set -euo pipefail
-printf 'synthetic memory entry\n' > handbook/synthetic.md
+printf -- "---\nschema_version: 1\nid: synthetic-entry\ntype: observation\nsource_session_digest: stub-digest\n---\nsynthetic memory entry\n" > handbook/synthetic.md
 exit 0
 EOF
 chmod +x "$TEST_BIN/dsh"

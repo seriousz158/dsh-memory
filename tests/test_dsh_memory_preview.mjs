@@ -31,7 +31,10 @@ async function seedPreview(root, previewId, changedPath, content, createdAt = "2
   await execFile("/usr/bin/python3", [helper, "prepare-preview", "--root", root, "--run-id", previewId]);
   const previewRoot = join(root, ".sync", "previews", previewId);
   await mkdir(join(previewRoot, "staging", "handbook"), { recursive: true });
-  await writeFile(join(previewRoot, "staging", changedPath), content);
+  // v0.9.1: staged handbook records must carry provenance — seed records in
+  // the same shape the model is required to produce.
+  const record = `---\nschema_version: 1\nid: preview-${previewId.slice(-8)}\ntype: observation\nsource_session_digest: seed-${previewId}\n---\n`;
+  await writeFile(join(previewRoot, "staging", changedPath), record + content);
   await writeFile(join(previewRoot, "preview.json"), JSON.stringify({
     preview_id: previewId,
     created_at: createdAt,
@@ -66,7 +69,7 @@ async function seedPreview(root, previewId, changedPath, content, createdAt = "2
   assert.equal(applied.ok, true, JSON.stringify(applied));
   assert.equal(applied.value.status, "applied");
   assert.deepEqual(applied.value.changed_paths, ["handbook/api.md"]);
-  assert.equal(await readFile(join(root, "handbook", "api.md"), "utf8"), "api preview\n");
+  assert.equal((await readFile(join(root, "handbook", "api.md"), "utf8")).endsWith("api preview\n"), true);
   // The preview is consumed.
   const after = await service.previews();
   assert.equal(after.value.previews.length, 0);

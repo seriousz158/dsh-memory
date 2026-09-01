@@ -246,9 +246,9 @@ try {
     }
 
     const expectedManifestVersions = {
-      "package.json": "0.9.0",
-      "packages/dsh-memory/package.json": "0.9.0",
-      "packages/dsh-memory-ui/package.json": "0.9.0",
+      "package.json": "0.9.1",
+      "packages/dsh-memory/package.json": "0.9.1",
+      "packages/dsh-memory-ui/package.json": "0.9.1",
     };
     for (const manifestPath of Object.keys(expectedManifestVersions)) {
       const content = readSnapshotText(snapshot, manifestPath);

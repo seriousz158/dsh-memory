@@ -72,3 +72,37 @@ real memory store.
 - Confirm the public repository and package targets before the external action.
 - If any check is skipped or cannot run, stop the release and document the
   blocker instead of treating the release as verified.
+
+## 6. Deployment acceptance (local DSH host)
+
+Perform during a safe window while no memory sync is in flight. These steps
+deploy the new bundle to a local DSH installation and prove it works with
+zero Provider involvement before re-enabling the scheduler.
+
+1. **Backup first.** Export a backup of the live memory root via the
+   `dsh-memory-backup` flow and verify the archive restores into a temporary
+   directory. Never deploy without a recovery point.
+2. **Quiesce the scheduler.** Unload only the memory-sync LaunchAgent
+   (label from `integrations/dsh/dsh-memory-sync.plist.example`), for example
+   `launchctl bootout gui/$UID/<label>`. DSH itself keeps running; no other
+   agent is touched.
+3. **Restart DSH in the safe window.** Restart the local DSH service so the
+   new plugin bundle loads, then confirm the settings page shows a healthy
+   repository.
+4. **Zero-Provider acceptance.** Run:
+
+   ```zsh
+   integrations/dsh/dsh-memory-sync --scan-only --json
+   ```
+
+   Assert `ok:true`, `scanOnly:true`, sensible `candidateSessions` and
+   `candidateBytes`, correct `watermark` state, and that `.last-sync` and
+   the journal are untouched afterwards. No DSH headless run, provider
+   process, or paid call may be spawned by this mode.
+5. **Reload the scheduler.** `launchctl bootstrap gui/$UID/<plist>` and watch
+   the next scheduled run acquire the operation lock, complete, and journal a
+   healthy `status`.
+6. **Retrieval smoke.** Query through `memory_search` and confirm hybrid
+   retrieval metadata is present (`retrieval.mode` is `hybrid` or `scan`,
+   `indexState` is `fresh`/`rebuilt`/`degraded`) and results are correct.
+   A persistent `degraded` state is a rollback signal.

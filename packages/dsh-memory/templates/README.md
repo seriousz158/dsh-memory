@@ -62,4 +62,6 @@ source_rollouts:
 
 提炼时只保留：稳定用户偏好、最终方案与原因、失败模式、项目入口、可复现命令和明确的后续契约。无高信号时写 `NO_SIGNAL` 并跳过。
 
+溯源与显式冲突链（宿主 fail-closed 校验）：新增 `handbook/` 条目必须至少携带 `source_rollouts`、`source_session_digest`、`source_hash` 之一，否则宿主拒绝整个 staging diff（`missing-provenance`）。覆盖旧条目时不要静默改写：新条目声明 `supersedes: <旧条目 id>`，并把旧条目 `status` 置为 `superseded`（或移入 `archive/`）；确有无法合并的矛盾时用 `conflicts_with: <对方 id>` 显式标注，等待人工裁决。
+
 整合时先比较新旧条目：冲突则覆盖、过时则移入 `archive/`、无变化则不制造噪声。`summary.md` 最终必须不超过 12 KiB；超出时压缩重复过程和细节，不得静默超出预算。不要执行 git、不要更新同步水位：宿主会在 staging 校验通过后代为提交。

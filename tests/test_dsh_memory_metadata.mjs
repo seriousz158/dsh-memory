@@ -151,25 +151,53 @@ body`, "handbook/project.md");
   assert.equal(topicKey({ id: "project/codegen", type: "decision" }), "decision:project");
   assert.equal(topicKey({ id: "plain", type: "preference" }), "preference:");
   assert.equal(topicKey({ id: "a/b", type: "fact" }), "fact:a");
-  // Conflict resolution: active beats candidate, newest updated_at wins,
-  // expired records never win, smallest id breaks ties.
-  const candidates = [
-    { id: "ns/topic", type: "fact", status: "candidate", updated_at: "2026-08-05" },
-    { id: "ns/topic", type: "fact", status: "active", updated_at: "2026-08-01" },
-    { id: "ns/topic", type: "fact", status: "active", updated_at: "2026-08-03", expires_at: "2020-01-01" },
-    { id: "ns/topic", type: "fact", status: "active", updated_at: "2026-08-03" },
+  // v0.9.1: explicit-only conflict resolution. A winner emerges only through
+  // an explicit supersedes link; implicit newest-wins ordering is gone.
+  const linked = [
+    { id: "ns/old", type: "fact", status: "active", updated_at: "2026-08-09" },
+    { id: "ns/new", type: "fact", status: "active", updated_at: "2026-08-01", supersedes: "ns/old" },
   ];
-  const winner = resolveTopicConflict(candidates);
-  assert.equal(winner.status, "active");
-  assert.equal(winner.updated_at, "2026-08-03");
-  assert.equal(winner.expires_at, undefined);
-  // All expired -> no winner.
-  const stale = candidates.map((record) => ({ ...record, expires_at: "2020-01-01" }));
+  assert.equal(resolveTopicConflict(linked).id, "ns/new");
+  // No explicit link -> unresolved, regardless of recency or status.
+  const unlinked = [
+    { id: "ns/a", type: "fact", status: "active", updated_at: "2026-08-05" },
+    { id: "ns/b", type: "fact", status: "candidate", updated_at: "2026-08-01" },
+  ];
+  assert.equal(resolveTopicConflict(unlinked), null);
+  // A conflicts_with link blocks both sides until an operator resolves it.
+  const conflicting = [
+    { id: "ns/a", type: "fact", supersedes: "ns/old" },
+    { id: "ns/b", type: "fact", conflicts_with: "ns/a" },
+    { id: "ns/old", type: "fact" },
+  ];
+  assert.equal(resolveTopicConflict(conflicting), null);
+  // Own status superseded/archived projects out; expired records never win;
+  // a single remaining contender wins without any link.
+  const projected = [
+    { id: "ns/a", type: "fact", status: "archived" },
+    { id: "ns/b", type: "fact", status: "superseded" },
+    { id: "ns/c", type: "fact", expires_at: "2020-01-01" },
+    { id: "ns/d", type: "fact" },
+  ];
+  assert.equal(resolveTopicConflict(projected).id, "ns/d");
+  const stale = projected.map((record) => ({ ...record, expires_at: "2020-01-01" }));
   assert.equal(resolveTopicConflict(stale), null);
   // isExpired projection.
   assert.equal(isExpired({ expires_at: "2020-01-01" }), true);
   assert.equal(isExpired({ expires_at: "2999-01-01" }), false);
   assert.equal(isExpired({}), false);
+}
+
+{
+  // v0.9.1: legacy migration front matter is the minimum valid schema set —
+  // no inferred type/status/confidence — and parses as a structured record.
+  const { migrationFrontMatter } = await import("../packages/dsh-memory/lib/legacy-migration.js");
+  const frontMatter = migrationFrontMatter("handbook/old-note.md", new Date("2026-01-02T03:04:05Z"));
+  assert.match(frontMatter, /^---\nschema_version: 1\nid: legacy-[0-9a-f]{16}\ncreated_at: 2026-01-02\nupdated_at: 2026-01-02\n---\n/);
+  const migrated = parseFrontMatter(`${frontMatter}old note body\n`, "handbook/old-note.md");
+  assert.equal(migrated.id.startsWith("legacy-"), true);
+  assert.equal(migrated.type, "observation");
+  assert.equal(migrated.status, "active");
 }
 
 {

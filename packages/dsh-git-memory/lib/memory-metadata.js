@@ -263,26 +263,40 @@ export function topicKey(metadata) {
 }
 
 /**
- * Deterministic conflict resolution. Given records that share a topicKey,
- * pick the winner in a stable order that never depends on file order:
+ * Explicit-only conflict resolution (v0.9.1). Given records that share a
+ * topicKey, a winner emerges only through explicit declarations — implicit
+ * "newest wins" ordering is gone because it silently discarded knowledge:
  *   1. expired records never win (lazy expiry projection);
- *   2. status precedence active > candidate > conflicted > superseded >
- *      archived;
- *   3. newest updated_at wins;
- *   4. lexicographically smallest id breaks the tie.
- * Returns the winning record, or null when no record is eligible.
+ *   2. records whose own status is superseded or archived are projected out;
+ *   3. a record named in another eligible record's `supersedes` is excluded
+ *      (explicit supersession);
+ *   4. records linked by `conflicts_with` block each other: neither side can
+ *      win until an operator resolves the conflict explicitly;
+ *   5. exactly one contender remains -> that record wins; zero or multiple
+ *      contenders -> null (unresolved, surfaced as a conflict instead of
+ *      being silently resolved by file order or recency).
+ * Returns the winning record, or null when resolution is not explicit.
  */
 export function resolveTopicConflict(records, now = Date.now()) {
-  const eligible = records.filter((record) => !isExpired(record, now));
+  const eligible = records.filter(
+    (record) => !isExpired(record, now) && record.status !== "superseded" && record.status !== "archived",
+  );
   if (eligible.length === 0) return null;
-  const precedence = Object.freeze({ active: 0, candidate: 1, conflicted: 2, superseded: 3, archived: 4 });
-  return [...eligible].sort((left, right) => {
-    const statusDiff = (precedence[left.status ?? "candidate"] ?? 1) - (precedence[right.status ?? "candidate"] ?? 1);
-    if (statusDiff !== 0) return statusDiff;
-    const dateDiff = String(right.updated_at ?? "").localeCompare(String(left.updated_at ?? ""));
-    if (dateDiff !== 0) return dateDiff;
-    return String(left.id).localeCompare(String(right.id));
-  })[0];
+  const byId = new Map(eligible.map((record) => [record.id, record]));
+  const excluded = new Set();
+  const linkedIds = (record, field) =>
+    [record[field]].filter((id) => typeof id === "string" && id.length > 0 && byId.has(id));
+  for (const record of eligible) {
+    for (const id of linkedIds(record, "supersedes")) excluded.add(id);
+  }
+  for (const record of eligible) {
+    for (const id of linkedIds(record, "conflicts_with")) {
+      excluded.add(record.id);
+      excluded.add(id);
+    }
+  }
+  const contenders = eligible.filter((record) => !excluded.has(record.id));
+  return contenders.length === 1 ? contenders[0] : null;
 }
 
 export const AUDIT_INVALID_METADATA_LIMIT = 20;
