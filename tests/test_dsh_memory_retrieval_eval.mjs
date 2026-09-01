@@ -236,6 +236,15 @@ if (hybridProbe.value.retrieval.mode === "hybrid") {
   assert.equal(hybridProbe.value.retrieval.stamp, expectedStamp);
 }
 
+// Hyphenated Latin identifiers must remain a valid FTS query. An unquoted
+// token such as "pending-candidates" is parsed by SQLite as an expression
+// (and may be mistaken for a column), which must never downgrade an otherwise
+// healthy derived index to the scan path.
+const hyphenated = await service.search({ query: "pending-candidates", limit: 10 });
+assert.equal(hyphenated.ok, true);
+assert.equal(hyphenated.value.results[0].path, "rollouts/chunked-delivery.md");
+assert.equal(hyphenated.value.retrieval.mode, "hybrid");
+
 // A new commit invalidates the stamp: the next search rebuilds, and the one
 // after that is fresh again.
 await writeFile(join(root, "handbook", "retrieval-extra.md"), `---
