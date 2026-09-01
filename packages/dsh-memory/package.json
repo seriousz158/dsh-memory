@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "private": true,
   "description": "Automatic local long-term memory for DSH",
   "type": "module",

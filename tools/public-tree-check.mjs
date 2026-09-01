@@ -102,6 +102,7 @@ const allowed = new Set([
   "tests/test_dsh_memory_sync_disabled.sh",
   "tests/test_dsh_memory_sync_dry_run.sh",
   "tests/test_dsh_memory_sync_env.sh",
+  "tests/test_dsh_memory_sync_chunks.sh",
   "tests/test_dsh_memory_sync_zstd_failure.sh",
   "tests/test_dsh_memory_sync_lock.sh",
   "tests/test_dsh_memory_sync_batch.sh",
@@ -242,9 +243,9 @@ try {
     }
 
     const expectedManifestVersions = {
-      "package.json": "0.8.3",
-      "packages/dsh-memory/package.json": "0.8.3",
-      "packages/dsh-memory-ui/package.json": "0.8.3",
+      "package.json": "0.8.4",
+      "packages/dsh-memory/package.json": "0.8.4",
+      "packages/dsh-memory-ui/package.json": "0.8.4",
     };
     for (const manifestPath of Object.keys(expectedManifestVersions)) {
       const content = readSnapshotText(snapshot, manifestPath);

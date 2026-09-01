@@ -4,6 +4,43 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-09-01
+
+### Added
+
+- Raw caps and model input caps are now separate budgets: raw session files
+  (`DSH_MEMORY_MAX_SESSION_FILE_BYTES`, 64 MiB default), decompressed
+  payloads (`DSH_MEMORY_MAX_SESSION_DECOMPRESSED_BYTES`, 128 MiB default),
+  and per-chunk bytes (`DSH_MEMORY_MAX_CHUNK_BYTES`, 1 MiB default) bound the
+  host side, while `DSH_MEMORY_MAX_CANDIDATE_BYTES` (8 MiB default) bounds
+  the model input per run.
+- Streaming sanitizer: `filter_session.py` decodes zstd/plain session logs
+  line by line without materializing the payload, fails closed with
+  `decompressed-too-large`, and writes fixed-size sanitized chunks prefixed
+  with a provenance header (`session_id`, `session_digest`,
+  `chunk_index/chunk_total`).
+- Per-candidate delivery with resume: size-class rejections are counted per
+  candidate (`rejected_candidate_count`) instead of aborting the batch;
+  partially delivered sessions are deferred (`deferred_candidate_count`) and
+  recorded in pending-candidates v2 (`digest`, `next_chunk`, `chunk_total`,
+  `complete`), so the next run resumes from the first undelivered chunk
+  without re-paying the provider for delivered chunks.
+- Journal records and scan-only output gain `processed_chunk_count`,
+  `deferred_candidate_count`, and `rejected_candidate_count`.
+
+### Changed
+
+- Size-class rejections (`raw cap`, `decompressed-too-large`) no longer fail
+  the batch: the watermark is held past unresolved candidates and the run is
+  journaled zero-cost (`rejected`/`deferred`) when nothing reaches the model.
+  Infrastructure failures (missing decoder, crashed filter, unreadable chunk
+  metadata) keep failing the whole batch closed.
+- The watermark only advances past a fully resolved window: truncation,
+  deferrals, and rejections all hold it in place.
+- The consolidation prompt documents the chunked contract (group by
+  `session_id`, read chunks in `chunk_index` order, undelivered chunks
+  arrive on the next run).
+
 ## [0.8.3] - 2026-09-01
 
 ### Added

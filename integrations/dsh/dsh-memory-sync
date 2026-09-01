@@ -13,6 +13,13 @@
 # Zero-change runs journal a no_change record and advance the watermark so
 # the same candidate window is never rescanned; preview runs remain
 # side-effect free (no journal record, no watermark move).
+# v0.8.4: raw candidate caps (64 MiB per session file, 128 MiB decompressed,
+# 1 MiB sanitized chunks) are separated from the model input batch caps.
+# Sessions are redacted by a streaming decoder, split into headered chunks
+# (session_id/session_digest/chunk_index/chunk_total), and oversized or
+# partially delivered sessions are rejected/deferred per candidate instead of
+# aborting the batch; the watermark never advances past unresolved or
+# rejected candidates and the journal carries chunk/defer/reject counts.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
@@ -24,13 +31,22 @@ MARKER="$DSH_MEMORY_ROOT/.last-sync"
 PENDING_CANDIDATES="$DSH_MEMORY_ROOT/.sync/pending-candidates.json"
 DSH_BIN="${DSH_BIN:-dsh}"
 DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
-SYNC_POLICY_VERSION="${DSH_MEMORY_SYNC_POLICY_VERSION:-v0.8.3}"
+SYNC_POLICY_VERSION="${DSH_MEMORY_SYNC_POLICY_VERSION:-v0.8.4}"
+# Model input batch caps: how much sanitized transcript is delivered per run.
 MAX_CANDIDATE_SESSIONS="${DSH_MEMORY_MAX_CANDIDATE_SESSIONS:-10}"
 MAX_CANDIDATE_BYTES="${DSH_MEMORY_MAX_CANDIDATE_BYTES:-8388608}"
+# Raw candidate caps (v0.8.4): these bound the host-side filter pipeline, not
+# the model input. A session file over the raw cap is rejected per candidate
+# (never batch-fatal); the decoder enforces the decompressed cap while
+# streaming; sanitized transcripts are split into headered chunks.
+MAX_SESSION_FILE_BYTES="${DSH_MEMORY_MAX_SESSION_FILE_BYTES:-67108864}"
+MAX_SESSION_DECOMPRESSED_BYTES="${DSH_MEMORY_MAX_SESSION_DECOMPRESSED_BYTES:-134217728}"
+MAX_CHUNK_BYTES="${DSH_MEMORY_MAX_CHUNK_BYTES:-1048576}"
 RETRY_COOLDOWN_SECONDS="${DSH_MEMORY_RETRY_COOLDOWN_SECONDS:-3600}"
 # These are host-lifecycle metrics, never numbers inferred from the model's
 # natural-language report. Candidates pass the watermark and one-hour idle
-# guards; a successful headless invocation processes every candidate it receives.
+# guards; a successful headless invocation processes every candidate chunk it
+# receives.
 CANDIDATE_SESSIONS=0
 PROCESSED_SESSIONS=0
 SKIPPED_SESSIONS=0
@@ -39,6 +55,11 @@ CANDIDATE_DIGEST=""
 CANDIDATE_MANIFEST_TMP=""
 CANDIDATE_TRUNCATED=0
 CANDIDATE_LIMIT_ERROR=""
+REJECTED_CANDIDATE_COUNT=0
+DEFERRED_CANDIDATE_COUNT=0
+PROCESSED_CHUNK_COUNT=0
+typeset -a PENDING_RECORDS
+PENDING_RECORDS=()
 
 SCAN_ONLY=0
 PREVIEW_MODE=0
@@ -221,13 +242,29 @@ try:
     value = json.loads(pathlib.Path(sys.argv[1]).read_text())
 except (OSError, UnicodeDecodeError, json.JSONDecodeError):
     raise SystemExit(0)
-for path, digest in (value.get("entries") or {}).items():
-    if isinstance(path, str) and isinstance(digest, str):
-        print(f"{path}\t{digest}")
+entries = value.get("entries") if isinstance(value, dict) else None
+if not isinstance(entries, dict):
+    raise SystemExit(0)
+for path, state in entries.items():
+    # Schema 1 stores a plain digest string; schema 2 (v0.8.4) stores
+    # {digest, next_chunk, chunk_total, complete}.
+    if isinstance(state, dict):
+        digest = str(state.get("digest", ""))
+        next_chunk = int(state.get("next_chunk", 1) or 1)
+        complete = bool(state.get("complete", False))
+    elif isinstance(state, str):
+        digest = state
+        next_chunk = 1
+        complete = False
+    else:
+        continue
+    print(f"{path}\t{digest}\t{next_chunk}\t{1 if complete else 0}")
 PY
 }
 
-pending_candidate_digest() {
+# Print "<next_chunk>\t<complete>" for a pending entry whose digest matches,
+# or nothing when the path is unknown or its digest changed.
+pending_entry_state() {
   local candidate="$1"
   local digest="$2"
   [[ -f "$PENDING_CANDIDATES" ]] || return 1
@@ -240,22 +277,47 @@ try:
     value = json.loads(pathlib.Path(sys.argv[1]).read_text())
 except (OSError, UnicodeDecodeError, json.JSONDecodeError):
     raise SystemExit(1)
-raise SystemExit(0 if (value.get("entries") or {}).get(sys.argv[2]) == sys.argv[3] else 1)
+entries = value.get("entries") if isinstance(value, dict) else None
+if not isinstance(entries, dict):
+    raise SystemExit(1)
+state = entries.get(sys.argv[2])
+if isinstance(state, dict):
+    digest = str(state.get("digest", ""))
+    next_chunk = int(state.get("next_chunk", 1) or 1)
+    complete = bool(state.get("complete", False))
+elif isinstance(state, str):
+    digest = state
+    next_chunk = 1
+    complete = False
+else:
+    raise SystemExit(1)
+if digest != sys.argv[3]:
+    raise SystemExit(1)
+print(f"{next_chunk}\t{1 if complete else 0}")
 PY
 }
 
+# Pending state (schema 2, v0.8.4). PENDING_RECORDS carries one
+# "path<TAB>digest<TAB>next_chunk<TAB>chunk_total<TAB>complete" quintuple per
+# candidate touched this run: deferred (partially delivered) sessions keep
+# complete=false with the resume chunk; fully delivered sessions are recorded
+# with complete=true only when the batch was truncated, so the next run can
+# skip them without paying the provider twice. Entries for untouched paths
+# survive until their session file disappears or their entry completes.
 write_pending_candidates() {
-  if [[ "$CANDIDATE_TRUNCATED" != "1" ]]; then
-    [[ "$PREVIEW_MODE" == "0" ]] && rm -f -- "$PENDING_CANDIDATES"
+  if [[ "$PREVIEW_MODE" == "1" ]]; then
     return 0
   fi
-  "$PYTHON_BIN" - "$PENDING_CANDIDATES" "${CANDIDATE_FILES[@]}" <<'PY'
+  if (( ${#PENDING_RECORDS} == 0 )); then
+    rm -f -- "$PENDING_CANDIDATES"
+    return 0
+  fi
+  "$PYTHON_BIN" - "$PENDING_CANDIDATES" "${PENDING_RECORDS[@]}" <<'PY'
 import json
 import os
 import pathlib
 import sys
 import tempfile
-import hashlib
 
 state_path = pathlib.Path(sys.argv[1])
 try:
@@ -265,18 +327,35 @@ except (OSError, UnicodeDecodeError, json.JSONDecodeError):
 entries = current.get("entries") if isinstance(current, dict) else {}
 if not isinstance(entries, dict):
     entries = {}
-for path in sys.argv[2:]:
+batch_paths = set()
+for record in sys.argv[2:]:
+    path, digest, next_chunk, chunk_total, complete = record.split("\t")
+    batch_paths.add(path)
+    entries[path] = {
+        "digest": digest,
+        "next_chunk": int(next_chunk),
+        "chunk_total": int(chunk_total),
+        "complete": complete == "1",
+    }
+# Entries this run did not touch stay only while they still describe real
+# deferred work; completed entries for vanished sessions are dropped.
+for path in [key for key in list(entries) if key not in batch_paths]:
+    state = entries[path]
+    if not (isinstance(state, dict) and state.get("complete") is True):
+        del entries[path]
+live = {path: state for path, state in entries.items() if state}
+if not live:
     try:
-        digest = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
-    except OSError:
-        continue
-    entries[path] = digest
+        state_path.unlink()
+    except FileNotFoundError:
+        pass
+    raise SystemExit(0)
 state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 fd, temporary = tempfile.mkstemp(prefix=".pending-candidates.", dir=state_path.parent)
 try:
     os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump({"schema_version": 1, "entries": entries}, handle, separators=(",", ":"))
+        json.dump({"schema_version": 2, "entries": live}, handle, separators=(",", ":"))
         handle.write("\n")
     os.replace(temporary, state_path)
 finally:
@@ -367,13 +446,13 @@ emit_scan_only() {
   [[ -f "$PENDING_CANDIDATES" ]] && pending_count="$(pending_candidate_lines | wc -l | tr -d ' ')"
   local watermark_state="absent"
   [[ -f "$MARKER" ]] && watermark_state="set"
-  printf '{"ok":true,"scanOnly":true,"memoryRoot":"%s","watermark":"%s","candidateSessions":%s,"candidateBytes":%s,"truncated":%s,"limitError":%s,"pendingEntries":%s,"candidates":%s}\n' \
+  printf '{"ok":true,"scanOnly":true,"memoryRoot":"%s","watermark":"%s","candidateSessions":%s,"candidateBytes":%s,"truncated":%s,"rejectedCandidates":%s,"pendingEntries":%s,"candidates":%s}\n' \
     "$DSH_MEMORY_ROOT" \
     "$watermark_state" \
     "$CANDIDATE_SESSIONS" \
     "$CANDIDATE_BYTES" \
     "$([[ "$CANDIDATE_TRUNCATED" == "1" ]] && print true || print false)" \
-    "$([[ -n "$CANDIDATE_LIMIT_ERROR" ]] && printf '"%s"' "$CANDIDATE_LIMIT_ERROR" || print null)" \
+    "$REJECTED_CANDIDATE_COUNT" \
     "$pending_count" \
     "$candidates_json"
 }
@@ -423,11 +502,13 @@ if [[ -f "$MARKER" ]]; then
     [[ -n "$candidate" ]] && CANDIDATE_FILES+=("$candidate")
   done < <(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$MARKER" ! -newermt '-1 hour' -print 2>/dev/null | sort)
   # A capped batch intentionally leaves the watermark unchanged. Re-add the
-  # pending paths on the next run, then filter hashes already delivered so a
-  # new session cannot cause the previous batch to be sent to the provider a
-  # second time.
-  while IFS=$'\t' read -r pending_path pending_digest; do
+  # pending paths on the next run, then drop entries that are already fully
+  # delivered so a new session cannot cause the previous batch to be sent to
+  # the provider a second time. Deferred (partially delivered) entries stay
+  # in the list and resume from their recorded next chunk.
+  while IFS=$'\t' read -r pending_path pending_digest pending_chunk pending_complete; do
     [[ -n "$pending_path" && -f "$pending_path" ]] || continue
+    [[ "$pending_complete" == "1" ]] && continue
     [[ "$(find "$pending_path" -newermt '-1 hour' -print -quit 2>/dev/null)" == "" ]] || continue
     already_listed=0
     for candidate in "${CANDIDATE_FILES[@]}"; do
@@ -439,7 +520,10 @@ if [[ -f "$MARKER" ]]; then
   UNPROCESSED_CANDIDATES=()
   for candidate in "${CANDIDATE_FILES[@]}"; do
     candidate_hash="$(candidate_file_digest "$candidate")"
-    if pending_candidate_digest "$candidate" "$candidate_hash"; then
+    if pending_entry_state "$candidate" "$candidate_hash" | {
+      read -r entry_chunk entry_complete
+      [[ "$entry_complete" == "1" ]]
+    }; then
       continue
     fi
     UNPROCESSED_CANDIDATES+=("$candidate")
@@ -449,15 +533,14 @@ if [[ -f "$MARKER" ]]; then
   LIMITED_CANDIDATES=()
   for candidate in "${CANDIDATE_FILES[@]}"; do
     local_size="$(stat -f %z -- "$candidate" 2>/dev/null || print 0)"
-    if (( local_size > MAX_CANDIDATE_BYTES )); then
-      CANDIDATE_LIMIT_ERROR="candidate-too-large"
-      break
+    if (( local_size > MAX_SESSION_FILE_BYTES )); then
+      # v0.8.4: oversized raw sessions are rejected per candidate instead of
+      # aborting the batch; the watermark below never advances past them.
+      REJECTED_CANDIDATE_COUNT=$((REJECTED_CANDIDATE_COUNT + 1))
+      progress "candidate rejected: session file exceeds the ${MAX_SESSION_FILE_BYTES}-byte raw cap"
+      continue
     fi
     if (( ${#LIMITED_CANDIDATES} >= MAX_CANDIDATE_SESSIONS )); then
-      CANDIDATE_TRUNCATED=1
-      break
-    fi
-    if (( CANDIDATE_BYTES + local_size > MAX_CANDIDATE_BYTES )); then
       CANDIDATE_TRUNCATED=1
       break
     fi
@@ -467,17 +550,24 @@ if [[ -f "$MARKER" ]]; then
   CANDIDATE_FILES=("${LIMITED_CANDIDATES[@]}")
   CANDIDATE_SESSIONS=${#CANDIDATE_FILES}
   CANDIDATE_DIGEST="$(candidate_digest "${CANDIDATE_FILES[@]}")"
-  if [[ -n "$CANDIDATE_LIMIT_ERROR" ]]; then
-    progress "candidate batch rejected: $CANDIDATE_LIMIT_ERROR"
-  elif [[ "$CANDIDATE_SESSIONS" == "0" && "$SCAN_ONLY" != "1" ]]; then
-    # Scan-only stays side-effect free: zero candidates are reported through
-    # the scan-only output paths below instead of this early exit, and a
-    # read-only inspection must never clear pending state as a side effect.
-    [[ "$PREVIEW_MODE" == "0" ]] && rm -f -- "$PENDING_CANDIDATES"
-    echo "dsh-memory-sync: no new idle session logs since $(stat -f '%Sm' "$MARKER"), nothing to do."
-    exit 0
+  if [[ "$CANDIDATE_SESSIONS" == "0" ]]; then
+    if [[ "$SCAN_ONLY" != "1" ]]; then
+      # Scan-only stays side-effect free: zero candidates are reported through
+      # the scan-only output paths below instead of this early exit, and a
+      # read-only inspection must never clear pending state as a side effect.
+      if (( REJECTED_CANDIDATE_COUNT == 0 )); then
+        [[ "$PREVIEW_MODE" == "0" ]] && rm -f -- "$PENDING_CANDIDATES"
+        echo "dsh-memory-sync: no new idle session logs since $(stat -f '%Sm' "$MARKER"), nothing to do."
+      else
+        # Rejected candidates hold the watermark and their pending state so
+        # the next run can retry them once the operator intervenes.
+        echo "dsh-memory-sync: 0 deliverable session(s), $REJECTED_CANDIDATE_COUNT rejected by the raw cap; watermark held."
+      fi
+      exit 0
+    fi
+  else
+    progress "$CANDIDATE_SESSIONS new idle session log(s), starting headless consolidation…"
   fi
-  progress "$CANDIDATE_SESSIONS new idle session log(s), starting headless consolidation…"
 else
   progress "first run — marker will be created, historical sessions skipped."
 fi
@@ -485,12 +575,10 @@ fi
 if [[ "$SCAN_ONLY" == "1" ]]; then
   if [[ "$JSON_OUTPUT" == "1" ]]; then
     emit_scan_only
-  elif [[ -n "$CANDIDATE_LIMIT_ERROR" ]]; then
-    print -u2 -- "dsh-memory-sync: scan-only: candidate batch rejected: $CANDIDATE_LIMIT_ERROR"
   elif [[ "$CANDIDATE_SESSIONS" == "0" ]]; then
     echo "dsh-memory-sync: scan-only: no new idle session logs, nothing to do."
   else
-    echo "dsh-memory-sync: scan-only: $CANDIDATE_SESSIONS candidate session(s), $CANDIDATE_BYTES bytes$( [[ "$CANDIDATE_TRUNCATED" == "1" ]] && print ', truncated' )."
+    echo "dsh-memory-sync: scan-only: $CANDIDATE_SESSIONS candidate session(s), $CANDIDATE_BYTES bytes$( [[ "$CANDIDATE_TRUNCATED" == "1" ]] && print ', truncated' )$( (( REJECTED_CANDIDATE_COUNT > 0 )) && print ", $REJECTED_CANDIDATE_COUNT rejected" )."
   fi
   exit 0
 fi
@@ -558,12 +646,6 @@ fi
 sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
   --phase staging --started-at "$STARTED_AT" >/dev/null
 
-if [[ -n "$CANDIDATE_LIMIT_ERROR" ]]; then
-  write_failure_record "$CANDIDATE_LIMIT_ERROR" candidate-scan
-  print -u2 -- "dsh-memory-sync: candidate batch rejected: $CANDIDATE_LIMIT_ERROR"
-  exit 1
-fi
-
 # --- Transaction setup: an isolated staging worktree + baseline manifest ---
 STAGING_PARENT="${TMPDIR:-/tmp}/dsh-memory-sync-$$"
 STAGING="$STAGING_PARENT/staging"
@@ -597,26 +679,120 @@ fi
 mkdir -m 700 -p "$SANITIZED_INPUT_ROOT"
 : > "$CANDIDATE_MANIFEST_TMP"
 FILTER_ERROR_TMP="$STAGING_PARENT/filter-error.txt"
+CHUNK_META_TMP="$STAGING_PARENT/chunk-meta.json"
+# v0.8.4 per-candidate delivery: each session is redacted by the streaming
+# decoder and split into headered chunks. Raw caps are enforced per candidate
+# (rejection is journal-counted, never batch-fatal); the model input batch cap
+# applies to delivered chunk bytes and defers the remainder to the next run.
+DELIVERED_CHUNK_BYTES=0
+typeset -a DELIVERED_CHUNK_FILES
+DELIVERED_CHUNK_FILES=()
 if [[ "${#CANDIDATE_FILES}" -gt 0 ]]; then
   input_index=0
   for candidate in "${CANDIDATE_FILES[@]}"; do
-    input_name="$(printf 'session-%04d.md' "$input_index")"
-    input_path="$SANITIZED_INPUT_ROOT/$input_name"
+    candidate_hash="$(candidate_file_digest "$candidate")"
+    next_chunk=1
+    entry_state="$(pending_entry_state "$candidate" "$candidate_hash" 2>/dev/null || true)"
+    if [[ -n "$entry_state" ]]; then
+      entry_chunk="${entry_state%%$'\t'*}"
+      entry_complete="${entry_state##*$'\t'}"
+      if [[ "$entry_complete" != "1" && "$entry_chunk" =~ '^[0-9]+$' ]]; then
+        next_chunk="$entry_chunk"
+      fi
+    fi
+    session_base="$(printf 'session-%04d' "$input_index")"
+    chunk_dir="$SANITIZED_INPUT_ROOT/$session_base"
+    mkdir -m 700 -p -- "$chunk_dir"
     : > "$FILTER_ERROR_TMP"
-    if ! "$PYTHON_BIN" "$FILTER_SESSION" "$candidate" > "$input_path" 2>"$FILTER_ERROR_TMP"; then
+    if ! "$PYTHON_BIN" "$FILTER_SESSION" "$candidate" \
+        --chunk-dir "$chunk_dir" --chunk-bytes "$MAX_CHUNK_BYTES" \
+        --session-digest "$candidate_hash" \
+        --max-decompressed-bytes "$MAX_SESSION_DECOMPRESSED_BYTES" \
+        > "$CHUNK_META_TMP" 2>"$FILTER_ERROR_TMP"; then
       filter_error_code="input-filter-failed"
       if grep -q -- '^zstd-unavailable:' "$FILTER_ERROR_TMP"; then
         filter_error_code="zstd-unavailable"
+      elif grep -q -- '^decompressed-too-large:' "$FILTER_ERROR_TMP"; then
+        filter_error_code="decompressed-too-large"
       fi
+      if [[ "$filter_error_code" == "decompressed-too-large" ]]; then
+        # Oversized decompressed payload: reject this candidate only; the
+        # watermark below never advances past it, so it stays unresolved.
+        REJECTED_CANDIDATE_COUNT=$((REJECTED_CANDIDATE_COUNT + 1))
+        progress "candidate rejected: decompressed-too-large"
+        rm -rf -- "$chunk_dir"
+        input_index=$((input_index + 1))
+        continue
+      fi
+      # Infrastructure failures (missing decoder, crashed filter) fail the
+      # whole run closed: silently skipping every session would hide a
+      # broken pipeline behind an empty journal.
       write_failure_record "$filter_error_code" staging
       print -u2 -- "dsh-memory-sync: failed to filter a candidate session: $filter_error_code"
       rm -rf -- "$STAGING_PARENT"
       exit 1
     fi
-    chmod 600 "$input_path"
-    print -r -- "$input_path" >> "$CANDIDATE_MANIFEST_TMP"
+    chunk_total="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1]))["chunk_total"])' "$CHUNK_META_TMP" 2>/dev/null || true)"
+    if [[ ! "$chunk_total" =~ '^[0-9]+$' ]]; then
+      write_failure_record "input-filter-failed" staging
+      print -u2 -- "dsh-memory-sync: failed to filter a candidate session: unreadable chunk metadata"
+      rm -rf -- "$STAGING_PARENT"
+      exit 1
+    fi
+    delivered_chunks=0
+    resume_chunk=""
+    for (( chunk_no = next_chunk; chunk_no <= chunk_total; chunk_no++ )); do
+      chunk_path="$chunk_dir/$session_base.chunk$(printf '%02d' "$chunk_no").md"
+      chunk_size="$(stat -f %z -- "$chunk_path" 2>/dev/null || print -1)"
+      if (( chunk_size < 0 )); then
+        write_failure_record "input-filter-failed" staging
+        print -u2 -- "dsh-memory-sync: failed to filter a candidate session: missing chunk $chunk_no"
+        rm -rf -- "$STAGING_PARENT"
+        exit 1
+      fi
+      if (( DELIVERED_CHUNK_BYTES + chunk_size > MAX_CANDIDATE_BYTES )); then
+        resume_chunk="$chunk_no"
+        break
+      fi
+      DELIVERED_CHUNK_FILES+=("$chunk_path")
+      DELIVERED_CHUNK_BYTES=$((DELIVERED_CHUNK_BYTES + chunk_size))
+      delivered_chunks=$((delivered_chunks + 1))
+    done
+    PROCESSED_CHUNK_COUNT=$((PROCESSED_CHUNK_COUNT + delivered_chunks))
+    if [[ -n "$resume_chunk" ]]; then
+      DEFERRED_CANDIDATE_COUNT=$((DEFERRED_CANDIDATE_COUNT + 1))
+      PENDING_RECORDS+=("$(printf '%s\t%s\t%s\t%s\t0' "$candidate" "$candidate_hash" "$resume_chunk" "$chunk_total")")
+    elif (( next_chunk <= chunk_total && delivered_chunks == chunk_total - next_chunk + 1 && CANDIDATE_TRUNCATED == 1 )); then
+      # Fully delivered inside a truncated batch: mark complete so the next
+      # run skips this session without paying for it a second time.
+      PENDING_RECORDS+=("$(printf '%s\t%s\t%s\t%s\t1' "$candidate" "$candidate_hash" "$((chunk_total + 1))" "$chunk_total")")
+    fi
     input_index=$((input_index + 1))
   done
+fi
+for chunk_path in "${DELIVERED_CHUNK_FILES[@]}"; do
+  print -r -- "$chunk_path" >> "$CANDIDATE_MANIFEST_TMP"
+done
+if (( ${#DELIVERED_CHUNK_FILES} == 0 )); then
+  # Nothing reached the model: every candidate was rejected, deferred, or
+  # already fully delivered. Journal the run without a paid model call and
+  # hold the watermark so unresolved candidates stay in the scan window.
+  DURATION_MS=$(( ( $(date +%s) - START_TS ) * 1000 ))
+  deferred_status="deferred"
+  if (( REJECTED_CANDIDATE_COUNT > 0 && DEFERRED_CANDIDATE_COUNT == 0 )); then
+    deferred_status="rejected"
+  fi
+  sync_apply journal --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
+    --status "$deferred_status" --started-at "$STARTED_AT" --candidate-sessions "$CANDIDATE_SESSIONS" \
+    --processed-sessions 0 --skipped-sessions "$CANDIDATE_SESSIONS" --changed-paths "" \
+    --phase complete --duration-ms "$DURATION_MS" --candidate-digest "$CANDIDATE_DIGEST" \
+    --sync-policy-version "$SYNC_POLICY_VERSION" \
+    --processed-chunk-count 0 --deferred-candidate-count "$DEFERRED_CANDIDATE_COUNT" \
+    --rejected-candidate-count "$REJECTED_CANDIDATE_COUNT" >/dev/null 2>&1 || true
+  write_pending_candidates
+  echo "dsh-memory-sync: 0 chunk(s) delivered ($DEFERRED_CANDIDATE_COUNT deferred, $REJECTED_CANDIDATE_COUNT rejected); watermark held."
+  rm -rf -- "$STAGING_PARENT"
+  exit 0
 fi
 
 # The rc.7 headless bundle deliberately persists every one-shot session. If
@@ -640,7 +816,7 @@ STAGING_PROMPT="你是 dsh-memory 的定时记忆整合代理，现在执行一�
 
 宿主已在本地完成候选筛选和凭据脱敏。你只能读取临时脱敏转录，不能访问原始会话日志、真实 DSH_HOME 或真实记忆库。
 
-候选会话清单：$CANDIDATE_MANIFEST_TMP（每行是 staging 内的临时脱敏转录；宿主已按每轮最多 $MAX_CANDIDATE_SESSIONS 个会话、总输入最多 $MAX_CANDIDATE_BYTES 字节截断；只处理清单中的路径）。
+候选会话清单：$CANDIDATE_MANIFEST_TMP（每行是 staging 内的一个脱敏转录分块文件。每个分块头部用 HTML 注释标注 session_id、session_digest 与 chunk_index/chunk_total：同一会话可能被拆成多个分块，请按其 session_id 分组、按 chunk_index 顺序合并阅读后再提炼；只处理清单中的路径。宿主已按每轮最多 $MAX_CANDIDATE_SESSIONS 个会话、模型输入最多 $MAX_CANDIDATE_BYTES 字节截断，未交付的分块会在下一轮继续送入）。
 
 步骤：
 1. 逐行读取候选会话清单中的临时脱敏转录，按 README「提炼与整合」一节的提炼要求提炼（无高信号则输出 NO_SIGNAL 并跳过该会话）。
@@ -721,7 +897,12 @@ if [[ -z "$changed_paths" ]]; then
   if [[ "$PREVIEW_MODE" == "0" ]]; then
     typeset -a FINALIZE_LAST_SYNC_ARGS
     FINALIZE_LAST_SYNC_ARGS=()
-    [[ "$CANDIDATE_TRUNCATED" == "1" ]] || FINALIZE_LAST_SYNC_ARGS=(--last-sync "$START_TS")
+    # The watermark only advances past a window that was fully resolved:
+    # truncation, deferrals, and rejections all hold it in place so the
+    # unresolved candidates are rescanned on the next run.
+    if [[ "$CANDIDATE_TRUNCATED" == "0" && "$DEFERRED_CANDIDATE_COUNT" == "0" && "$REJECTED_CANDIDATE_COUNT" == "0" ]]; then
+      FINALIZE_LAST_SYNC_ARGS=(--last-sync "$START_TS")
+    fi
     DURATION_MS=$(( ( $(date +%s) - START_TS ) * 1000 ))
     finalize_output=""
     if ! finalize_output="$(sync_apply finalize \
@@ -738,6 +919,9 @@ if [[ -z "$changed_paths" ]]; then
       --duration-ms "$DURATION_MS" \
       --candidate-digest "$CANDIDATE_DIGEST" \
       --sync-policy-version "$SYNC_POLICY_VERSION" \
+      --processed-chunk-count "$PROCESSED_CHUNK_COUNT" \
+      --deferred-candidate-count "$DEFERRED_CANDIDATE_COUNT" \
+      --rejected-candidate-count "$REJECTED_CANDIDATE_COUNT" \
       "${FINALIZE_LAST_SYNC_ARGS[@]}")"; then
       sync_apply write-finalize-failure --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" \
         --candidate-digest "$CANDIDATE_DIGEST" >/dev/null 2>&1 || true
@@ -800,7 +984,9 @@ sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation
 finalize_output=""
 typeset -a FINALIZE_LAST_SYNC_ARGS
 FINALIZE_LAST_SYNC_ARGS=()
-[[ "$CANDIDATE_TRUNCATED" == "1" ]] || FINALIZE_LAST_SYNC_ARGS=(--last-sync "$START_TS")
+if [[ "$CANDIDATE_TRUNCATED" == "0" && "$DEFERRED_CANDIDATE_COUNT" == "0" && "$REJECTED_CANDIDATE_COUNT" == "0" ]]; then
+  FINALIZE_LAST_SYNC_ARGS=(--last-sync "$START_TS")
+fi
 if ! finalize_output="$(sync_apply finalize \
   --root "$DSH_MEMORY_ROOT" \
   --run-id "$RUN_ID" \
@@ -816,6 +1002,9 @@ if ! finalize_output="$(sync_apply finalize \
   --duration-ms "$DURATION_MS" \
   --candidate-digest "$CANDIDATE_DIGEST" \
   --sync-policy-version "$SYNC_POLICY_VERSION" \
+  --processed-chunk-count "$PROCESSED_CHUNK_COUNT" \
+  --deferred-candidate-count "$DEFERRED_CANDIDATE_COUNT" \
+  --rejected-candidate-count "$REJECTED_CANDIDATE_COUNT" \
   "${FINALIZE_LAST_SYNC_ARGS[@]}")"; then
   sync_apply write-finalize-failure --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" \
     --candidate-digest "$CANDIDATE_DIGEST" >/dev/null 2>&1 || true
