@@ -143,7 +143,7 @@ function startSummaryWatcher(onChange) {
     lastSeen = { mtimeMs: stat.mtimeMs, size: stat.size };
   } catch {}
   let debounceTimer = null;
-  watchFile(summaryPath, { interval: SUMMARY_WATCH_INTERVAL_MS }, (current) => {
+  watchFile(summaryPath, { interval: SUMMARY_WATCH_INTERVAL_MS, persistent: false }, (current) => {
     // A zeroed stat means the file is temporarily gone; the snapshot
     // retention in buildMemorySectionText covers it, so do not refresh.
     if (!current || (current.size === 0 && current.mtimeMs === 0)) return;
