@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -21,6 +22,23 @@ DIRECTORIES = TARGETS[1:]
 TOKEN_RE = re.compile(r"^\.dpsk-memory-clear-[0-9a-f]{32}$")
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+
+_GIT_EXECUTABLE = None
+
+
+def git_executable():
+    """Resolve Git once: an explicit executable override, then PATH, then the
+    historical absolute location. Keeps the documented "Git on PATH" contract
+    on systems where Git does not live at /usr/bin/git, and ignores an override
+    that is not an executable file instead of failing every Git step."""
+    global _GIT_EXECUTABLE
+    if _GIT_EXECUTABLE is None:
+        override = os.environ.get("DPSK_GIT")
+        if override and os.path.isfile(override) and os.access(override, os.X_OK):
+            _GIT_EXECUTABLE = override
+        else:
+            _GIT_EXECUTABLE = shutil.which("git") or "/usr/bin/git"
+    return _GIT_EXECUTABLE
 
 
 class SafeClearError(Exception):
@@ -268,7 +286,7 @@ def hash_file(root_fd, directory_fd, name):
     try:
         with os.fdopen(os.dup(file_fd), "rb", closefd=True) as source:
             completed = subprocess.run(
-                ["/usr/bin/git", "hash-object", "-w", "--stdin"],
+                [git_executable(), "hash-object", "-w", "--stdin"],
                 pass_fds=(root_fd,),
                 preexec_fn=lambda: os.fchdir(root_fd),
                 stdin=source,

@@ -35,6 +35,23 @@ READONLY_NAMES = ("README.md",)
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 RUN_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$")
+
+_GIT_EXECUTABLE = None
+
+
+def git_executable():
+    """Resolve Git once: an explicit executable override, then PATH, then the
+    historical absolute location. Keeps the documented "Git on PATH" contract
+    on systems where Git does not live at /usr/bin/git, and ignores an override
+    that is not an executable file instead of failing every Git step."""
+    global _GIT_EXECUTABLE
+    if _GIT_EXECUTABLE is None:
+        override = os.environ.get("DPSK_GIT")
+        if override and os.path.isfile(override) and os.access(override, os.X_OK):
+            _GIT_EXECUTABLE = override
+        else:
+            _GIT_EXECUTABLE = shutil.which("git") or "/usr/bin/git"
+    return _GIT_EXECUTABLE
 LOCK_NAME = "operation.lock"
 ACTIVE_NAME = "active-run.json"
 FAILURE_SENTINEL_NAME = "failure-sentinel.json"
@@ -630,12 +647,15 @@ def metadata_topic_key(record):
 
 
 def is_record_expired(record, now=None):
-    """Lazy expiry projection: expires_at earlier than now means expired."""
+    """Lazy expiry projection: expires_at earlier than now means expired.
+    Date-only values are interpreted as UTC midnight, matching the host
+    plugin's isExpired(); mktime would apply the local timezone and let the
+    two expiry decisions drift apart by the zone offset."""
     expires_at = record.get("expires_at") if isinstance(record, dict) else None
     if not isinstance(expires_at, str):
         return False
     try:
-        expires = time.mktime(time.strptime(expires_at, "%Y-%m-%d"))
+        expires = calendar.timegm(time.strptime(expires_at, "%Y-%m-%d"))
     except (ValueError, OverflowError):
         return False
     current = time.time() if now is None else now
@@ -1039,7 +1059,7 @@ def empty_directory(directory_fd, name):
 
 def git(root, args, environment=None):
     completed = subprocess.run(
-        ["/usr/bin/git", "-C", root, *args],
+        [git_executable(), "-C", root, *args],
         env=environment if environment is not None else os.environ,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1068,7 +1088,7 @@ def snapshot_live_entries(root_fd):
 def hash_object(root_fd, file_fd):
     with os.fdopen(os.dup(file_fd), "rb", closefd=True) as source:
         completed = subprocess.run(
-            ["/usr/bin/git", "hash-object", "-w", "--stdin"],
+            [git_executable(), "hash-object", "-w", "--stdin"],
             pass_fds=(root_fd,),
             preexec_fn=lambda: os.fchdir(root_fd),
             stdin=source,

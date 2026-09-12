@@ -273,4 +273,34 @@ We chose TypeScript for the codegen pipeline.\n`);
   assert.deepEqual(await bridge.setEnabled({ enabled: "false" }), { ok: false, error: { code: "settings-invalid-request" } });
 }
 
+{
+  // Browser-supplied run ids and preview ids that could traverse paths or
+  // smuggle option-like text are rejected before any file or Git use.
+  const repo = new MemoryRepository({ __testOnly: true });
+  assert.deepEqual(
+    await repo.rollback({ runId: "../../etc/passwd", confirmation: "ROLLBACK_MEMORY" }),
+    { ok: false, error: { code: "rollback-run-not-found" } },
+  );
+  assert.deepEqual(
+    await repo.rollback({ runId: "..", confirmation: "ROLLBACK_MEMORY" }),
+    { ok: false, error: { code: "rollback-run-not-found" } },
+  );
+  assert.deepEqual(
+    await repo.rollback({ runId: "runs/other", confirmation: "ROLLBACK_MEMORY" }),
+    { ok: false, error: { code: "rollback-run-not-found" } },
+  );
+  assert.deepEqual(
+    await repo.applyPreview({ previewId: "../escape" }),
+    { ok: false, error: { code: "preview-invalid-request" } },
+  );
+  assert.deepEqual(
+    await repo.applyPreview({ previewId: "20260819T130000Z-nothex!" }),
+    { ok: false, error: { code: "preview-invalid-request" } },
+  );
+  assert.deepEqual(
+    await repo.discardPreview({ previewId: "../../sync/runs/x" }),
+    { ok: false, error: { code: "preview-invalid-request" } },
+  );
+}
+
 console.log("dsh-memory repository tests passed");

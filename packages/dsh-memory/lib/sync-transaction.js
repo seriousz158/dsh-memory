@@ -9,6 +9,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -29,7 +30,10 @@ export function syncError(code) {
 /** Stable machine timestamp for a run id: YYYYMMDDTHHMMSSZ-<hex>. */
 export function newRunId(now = new Date()) {
   const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  const random = Math.random().toString(16).slice(2, 10);
+  // The suffix must always be exactly eight lowercase hex characters to
+  // satisfy the helper's RUN_ID_RE. Math.random() can produce a shorter digit
+  // run, so derive the suffix from a UUID instead.
+  const random = randomUUID().replace(/-/g, "").slice(0, 8);
   return `${stamp}-${random}`;
 }
 
