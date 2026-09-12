@@ -6,7 +6,9 @@ import { resolve } from "node:path";
 const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
 process.chdir(root);
 
-const gitBuffer = (args) => execFileSync("git", args, { cwd: root, encoding: "buffer" });
+// The tracked tree already archives to >1 MiB; the 1 MiB default exec
+// buffer aborts the snapshot with ENOBUFS.
+const gitBuffer = (args) => execFileSync("git", args, { cwd: root, encoding: "buffer", maxBuffer: 128 * 1024 * 1024 });
 const nullSeparated = (buffer) => buffer.toString("utf8").split("\0").filter(Boolean);
 const parseIndexRecords = () => nullSeparated(gitBuffer(["ls-files", "--stage", "-z"])).map((record) => {
   const tab = record.indexOf("\t");

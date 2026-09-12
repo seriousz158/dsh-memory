@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { MemoryRepository } from "../packages/dsh-memory/lib/index.js";
+import { newRunId } from "../packages/dsh-memory/lib/sync-transaction.js";
 
 const execFile = promisify(execFileCallback);
 const git = async (root, args) => await execFile("/usr/bin/git", ["-C", root, ...args], { encoding: "utf8" });
@@ -144,6 +145,15 @@ const repository = async (root) => new MemoryRepository({ root, __testOnly: true
   const rollback = await service.rollback({ runId: "20260819T130000Z-b2c3d4e5", confirmation: "ROLLBACK_MEMORY" });
   assert.equal(rollback.ok, false);
   assert.equal(rollback.error.code, "rollback-conflict");
+}
+
+{
+  // A run id must always satisfy the helper's RUN_ID_RE. The historical
+  // Math.random suffix could occasionally produce fewer than eight hex
+  // digits, making the id invalid for preview operations.
+  for (let index = 0; index < 500; index += 1) {
+    assert.match(newRunId(), /^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$/);
+  }
 }
 
 console.log("dsh-memory sync transaction tests passed");

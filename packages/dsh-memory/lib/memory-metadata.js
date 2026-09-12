@@ -73,13 +73,12 @@ function parseScalar(raw) {
   const trimmed = raw.trim();
   if (trimmed.startsWith('"') && trimmed.endsWith('"')) return trimmed.slice(1, -1);
   if (trimmed.startsWith("'") && trimmed.endsWith("'")) return trimmed.slice(1, -1);
+  // Integers only, matching the staging validator in sync-apply.py: that
+  // helper keeps a decimal scalar a string, so `schema_version: 1.0` must be
+  // rejected on both sides instead of passing the audit and failing a sync.
   if (/^-?\d+$/.test(trimmed)) {
     const numeric = Number(trimmed);
     if (Number.isSafeInteger(numeric)) return numeric;
-  }
-  if (/^-?\d+\.\d+$/.test(trimmed)) {
-    const numeric = Number(trimmed);
-    if (Number.isFinite(numeric)) return numeric;
   }
   return trimmed;
 }

@@ -100,7 +100,7 @@ window.__ModuleLoader__.load({
       running: { label: "进行中", tone: "warning" },
       pending: { label: "待应用", tone: "warning" },
     };
-    const runStatusMeta = (status) => RUN_STATUS[status] ?? { label: String(status ?? "未知"), tone: "neutral" };
+    const runStatusMeta = (status) => (Object.hasOwn(RUN_STATUS, status) ? RUN_STATUS[status] : undefined) ?? { label: String(status ?? "未知"), tone: "neutral" };
     const chevron = () => jsx.jsx("svg", { className: "dshmu_chev", width: 12, height: 12, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: jsx.jsx("path", { d: "M9 6l6 6-6 6" }) });
     // Inline two-step confirm: click arms the cluster, Escape / 取消 / 3s timer
     // disarm it. The cluster lives inside an aria-live region owned by the
@@ -128,6 +128,7 @@ window.__ModuleLoader__.load({
       const execute = async () => {
         setConfirming(false);
         try { await onConfirm(); }
+        catch { /* handler-owned errors surface through their own state */ }
         finally { onComplete?.(); }
       };
       if (confirming && !busy) {
@@ -165,24 +166,60 @@ window.__ModuleLoader__.load({
               void (async () => {
                 try {
                   const answer = operationResult(await memory.setEnabled({ enabled: value }));
-                  publish(answer.ok ? { status: "ready", writable: true, value: answer.value } : { status: "error", writable: false, error: answer.error.code });
+                  if (answer.ok) {
+                    publish({ status: "ready", writable: true, value: answer.value });
+                    return;
+                  }
+                  // Keep the last known value so the toggle never shows a wrong
+                  // state, then re-read settings: one failed write must not
+                  // disable the whole memory block until a page reload.
+                  publish({ status: "error", writable: false, value: snapshot.value, error: answer.error.code });
+                  scheduleSettingsRetry();
                 } catch {
-                  publish({ status: "error", writable: false, error: "settings-write-failed" });
+                  publish({ status: "error", writable: false, value: snapshot.value, error: "settings-write-failed" });
+                  scheduleSettingsRetry();
                 }
               })();
             },
           };
-          void (async () => {
-            try {
-              const answer = operationResult(await memory.getSettings());
-              publish(answer.ok ? { status: "ready", writable: true, value: answer.value } : { status: "error", writable: false, error: answer.error.code });
-            } catch {
-              publish({ status: "error", writable: false, error: "settings-unavailable" });
-            }
-          })();
+          // Bounded settings re-read: the initial load and any later failure
+          // retry a few times with a short delay instead of parking the block
+          // in a non-writable error state forever.
+          let settingsReadAttempts = 0;
+          let settingsRetryTimer = null;
+          const readSettings = () => {
+            void (async () => {
+              try {
+                const answer = operationResult(await memory.getSettings());
+                if (answer.ok) {
+                  settingsReadAttempts = 0;
+                  publish({ status: "ready", writable: true, value: answer.value });
+                  return;
+                }
+                publish({ status: "error", writable: false, value: snapshot.value, error: answer.error.code });
+              } catch {
+                publish({ status: "error", writable: false, value: snapshot.value, error: "settings-unavailable" });
+              }
+              if (snapshot.status === "error" && settingsReadAttempts < 3) {
+                settingsReadAttempts += 1;
+                scheduleSettingsRetry();
+              }
+            })();
+          };
+          const scheduleSettingsRetry = () => {
+            if (settingsRetryTimer !== null) return;
+            settingsRetryTimer = setTimeout(() => {
+              settingsRetryTimer = null;
+              readSettings();
+            }, 2000);
+          };
+          readSettings();
           const subscribe = scope.subscribe.bind(scope);
           const getSnapshot = scope.getSnapshot.bind(scope);
-          memoryCtx.effect(() => () => { scope.dispose(); }, "dsh-memory-ui: cleanup");
+          memoryCtx.effect(() => () => {
+            if (settingsRetryTimer !== null) clearTimeout(settingsRetryTimer);
+            scope.dispose();
+          }, "dsh-memory-ui: cleanup");
           function MemoryRow() {
             const snapshot = react.useSyncExternalStore(subscribe, getSnapshot);
             const enabled = typeof snapshot.value?.enabled === "boolean" ? snapshot.value.enabled : false;
@@ -210,7 +247,14 @@ window.__ModuleLoader__.load({
               void load();
               return () => { disposed = true; };
             }, [repositoryRevision]);
-            const toggleRow = (id) => setOpenRow((current) => (current === id ? null : id));
+            const toggleRow = (id) => {
+              const closing = openRow === id;
+              // Collapsing the delete row by its header must disarm the typed
+              // phrase too; otherwise re-expanding leaves the destructive
+              // button armed with one click.
+              if (closing && id === "delete") { setPhrase(""); setState(null); }
+              setOpenRow(closing ? null : id);
+            };
             const focusRow = (...ids) => {
               let attempts = 0;
               const focus = () => {
@@ -256,7 +300,10 @@ window.__ModuleLoader__.load({
               const load = async () => {
                 try {
                   const answer = operationResult(await memory.previews());
-                  if (!disposed) setPreviewList(answer.ok ? answer.value.previews : null);
+                  // Guard the payload shape: an ok response without a previews
+                  // array renders as "no previews" instead of crashing the row.
+                  const previews = answer.ok && Array.isArray(answer.value?.previews) ? answer.value.previews : answer.ok ? [] : null;
+                  if (!disposed) setPreviewList(previews);
                 } catch {
                   if (!disposed) setPreviewList(null);
                 }
@@ -298,7 +345,7 @@ window.__ModuleLoader__.load({
                 if (!answer.ok) return setState({ error: answer.error.code });
                 setPhrase(""); setRepositoryRevision((revision) => revision + 1);
                 const checkpoints = [answer.value.recoveryCommit && "恢复提交", answer.value.clearCommit && "清空提交"].filter(Boolean).join("和");
-                setState({ success: answer.value.alreadyEmpty ? "记忆已为空" : `已清空 ${answer.value.clearedFileCount} 个记忆文件${checkpoints ? `，已创建${checkpoints}` : ""}；长期记忆仍保持开启` });
+                setState({ success: answer.value.alreadyEmpty ? "记忆已为空" : `已清空 ${answer.value.clearedFileCount ?? 0} 个记忆文件${checkpoints ? `，已创建${checkpoints}` : ""}；长期记忆仍保持开启` });
               } catch {
                 setState({ error: "clear-failed" });
               } finally {
@@ -312,7 +359,7 @@ window.__ModuleLoader__.load({
             const metadataAnomaly = repository?.value && repository.value.metadataValid === false
               ? {
                   count: repository.value.invalidMetadataCount ?? 0,
-                  paths: (repository.value.invalidMetadata ?? []).slice(0, 5).map((entry) => entry.path),
+                  paths: (repository.value.invalidMetadata ?? []).slice(0, 5).map((entry) => (typeof entry?.path === "string" ? entry.path : null)).filter(Boolean),
                 }
               : null;
             const repositoryStatus = repository?.error

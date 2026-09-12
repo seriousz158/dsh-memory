@@ -4,6 +4,61 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Resolve the Git executable through an explicit `DPSK_GIT` override, then
+  PATH lookup, instead of hardcoding `/usr/bin/git` in the host plugin, both
+  Python helpers, and the backup tool — the documented contract is "Git on
+  PATH", and the hardcoded path does not exist on every supported host.
+- Validate browser-supplied run ids and preview ids in the host plugin before
+  they reach journal file paths or Git arguments (`rollback`, `applyPreview`,
+  `discardPreview`), mirroring the helper's id format instead of relying on
+  the helper running first.
+- Derive `newRunId()` suffixes from a UUID: `Math.random()` can produce fewer
+  than eight hex digits, yielding run ids the helper rejects.
+- Keep the JS and Python record validators in parity: decimal scalars such as
+  `schema_version: 1.0` now fail the host audit too (previously they passed
+  the audit and only failed at staging), and `expires_at` is interpreted as
+  UTC on both sides instead of drifting by the local timezone offset.
+- `dsh-memory-sync`: create the staging directory with `mktemp -d` (the
+  PID-based name in a shared `TMPDIR` could be pre-created or symlinked by
+  another local user) and set `umask 077` before creating it.
+- `dsh-memory-sync`: validate `--preview`/`--apply-preview`/`--discard-preview`
+  ids in the shell before they are used to build `rm -rf`/`cp -R` paths.
+- `dsh-memory-sync`: portable `stat`/digest probes (BSD vs GNU; `sha256sum`
+  vs `shasum`) so the raw-size cap and watermark digests work on Linux, and
+  honor `DPSK_PYTHON3` for all JSON parsing instead of a hardcoded
+  `/usr/bin/python3`.
+- `dsh-memory-sync`: advance the `.last-sync` watermark only to the
+  idle-window boundary (and pin its mtime to that cutoff). Previously a clean
+  run stamped "now", permanently skipping any session whose final write
+  landed inside the one-hour idle guard, and widened the next scan window by
+  the run duration.
+- `dsh-memory-sync`: keep deferred (incomplete) pending entries across runs;
+  the retention condition was inverted against its comment, so a deferred
+  session resumed from chunk 1 and could lose its tail entirely.
+- `dsh-memory-backup`: `--dry-run` no longer writes the bundle; the exported
+  bundle is chmod 0600; `payload_size_bytes` in the manifest is the sum of
+  payload file sizes instead of the root directory's inode size.
+- Session filter: redact additional credential shapes before transcripts
+  reach the provider — PEM private-key blocks, JWTs, Google API keys, and
+  Slack/GitLab/npm tokens.
+
+### UI
+
+- The memory settings block recovers from a failed settings write/read
+  instead of staying disabled until a page reload, keeps showing the last
+  known enabled state while retrying, no longer crashes when a previews
+  response lacks its payload array, disarms the typed delete phrase when the
+  delete row is collapsed by its header, and renders unknown run statuses and
+  metadata anomalies defensively.
+
+### Docs
+
+- Corrected the installation page's peer-range paragraph (it described
+  v0.8.4) and documented that the bundle and manual install paths are
+  mutually exclusive.
+
 ## [0.9.2] - 2026-09-01
 
 ### Fixed

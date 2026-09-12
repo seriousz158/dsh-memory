@@ -29,6 +29,24 @@ const querySecret = ["query", "secret"].join("-");
 const nestedPassword = ["nested", "password"].join("-");
 const orderingSk = ["sk", "ordering-123"].join("-");
 const homePath = ["", "Users", "example", "project"].join("/");
+// Additional credential shapes covered by the filter: signed JWTs, Google
+// API keys, Slack/GitLab/npm tokens, and PEM private-key blocks. Built from
+// joined fragments like the synthetics above so the repository's own secret
+// scanner never sees a literal credential shape in this test source.
+const syntheticJwt = [
+  ["eyJ", "hbGciOiJIUzI1NiJ9"].join(""),
+  ["eyJzdWIiOiIxMjM0NTY3ODkwIn0"].join(""),
+  "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV",
+].join(".");
+const syntheticGoogleKey = ["AIza", "SyA1LiS1oNgC0Y3aWsMbrj4DvGqN9k2ZtX8u"].join("");
+const syntheticSlackToken = ["xoxb", "1234567890-1234567890123-abcdefabcdef"].join("-");
+const syntheticGitlabToken = ["glpat", "abcdef0123456789abcdef0123456789"].join("-");
+const syntheticNpmToken = ["npm", "abcdef0123456789abcdef0123456789"].join("_");
+const syntheticPemBlock = [
+  ["-----BEGIN", "RSA", "PRIVATE", "KEY-----"].join(" "),
+  "MIIBOgIBAAJBAKrainNotARealKeyBody0123456789",
+  ["-----END", "RSA", "PRIVATE", "KEY-----"].join(" "),
+].join("\n");
 const syntheticSecrets = [
   syntheticSk,
   syntheticBearer,
@@ -38,6 +56,12 @@ const syntheticSecrets = [
   querySecret,
   nestedPassword,
   homePath,
+  syntheticJwt,
+  syntheticGoogleKey,
+  syntheticSlackToken,
+  syntheticGitlabToken,
+  syntheticNpmToken,
+  syntheticPemBlock,
 ];
 
 const events = [
@@ -54,7 +78,7 @@ const events = [
       content: [
         {
           type: "text",
-          text: `Keep benign-user-text; redact ${syntheticSk} and ${syntheticBearer}.`,
+          text: `Keep benign-user-text; redact ${syntheticSk} and ${syntheticBearer}; also ${syntheticJwt}, ${syntheticGoogleKey}, ${syntheticSlackToken}, ${syntheticGitlabToken}, ${syntheticNpmToken}, and ${JSON.stringify(syntheticPemBlock)}.`,
         },
       ],
     },

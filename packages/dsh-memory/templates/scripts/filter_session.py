@@ -43,6 +43,17 @@ GITHUB_KEY_RE = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9]{4,}|github_pat_[A-Za-z0-9_]{20,})\b",
     re.IGNORECASE,
 )
+# Additional credential shapes seen in real transcripts: signed JWTs, Google
+# API keys, Slack/GitLab/npm tokens, and PEM private-key blocks (the generic
+# BEGIN/END pattern covers RSA/EC/OPENSSH and similar block types).
+JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*")
+GOOGLE_API_KEY_RE = re.compile(r"\bAIza[0-9A-Za-z_-]{35}")
+SLACK_TOKEN_RE = re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}")
+GITLAB_TOKEN_RE = re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}")
+NPM_TOKEN_RE = re.compile(r"\bnpm_[A-Za-z0-9]{20,}")
+PEM_BLOCK_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"
+)
 AWS_ACCESS_KEY_RE = re.compile(
     r"\b(?:A3T|AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b"
 )
@@ -71,6 +82,12 @@ def redact_text(value: str) -> str:
     value = SK_KEY_RE.sub(REDACTION, value)
     value = GITHUB_KEY_RE.sub(REDACTION, value)
     value = AWS_ACCESS_KEY_RE.sub(REDACTION, value)
+    value = PEM_BLOCK_RE.sub(REDACTION, value)
+    value = JWT_RE.sub(REDACTION, value)
+    value = GOOGLE_API_KEY_RE.sub(REDACTION, value)
+    value = SLACK_TOKEN_RE.sub(REDACTION, value)
+    value = GITLAB_TOKEN_RE.sub(REDACTION, value)
+    value = NPM_TOKEN_RE.sub(REDACTION, value)
     return value
 
 

@@ -8,7 +8,12 @@ import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
-import { settingsNamespace } from "@deepseek-ai/dsh-settings";
+import * as settingsModule from "@deepseek-ai/dsh-settings";
+// DSH 0.1.0-rc.6/rc.7 exposed a settingsNamespace() helper that formatted the
+// namespace id; newer runtimes removed the helper and accept the plain
+// lowercase namespace directly at register(). Fall back to the identity so
+// the plugin loads on both runtime generations.
+const settingsNamespace = settingsModule.settingsNamespace ?? ((name) => name);
 import {
   acquireOperationLock,
   clearActiveRun,
@@ -48,6 +53,37 @@ const PYTHON_CANDIDATES = Object.freeze([
   "/usr/bin/python3",
   "python3",
 ].filter(Boolean));
+// Git discovery: an explicit override wins, then deterministic absolute
+// locations, then the PATH lookup promised by the documentation. The first
+// candidate that answers `--version` is cached for the process lifetime.
+const GIT_CANDIDATES = Object.freeze([
+  process.env.DPSK_GIT,
+  "/usr/bin/git",
+  "/usr/local/bin/git",
+  "/opt/homebrew/bin/git",
+  "git",
+].filter(Boolean));
+let resolvedGitExecutable = null;
+async function gitExecutable() {
+  if (resolvedGitExecutable !== null) return resolvedGitExecutable;
+  for (const candidate of GIT_CANDIDATES) {
+    try {
+      await execFile(candidate, ["--version"]);
+      resolvedGitExecutable = candidate;
+      return candidate;
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+  }
+  throw Object.assign(new Error("Git is unavailable for the memory repository"), { memoryCode: "repo-unavailable" });
+}
+// Run ids and preview ids reach file paths and Git arguments through the
+// remote API. Ids are host-generated (timestamps, operation names, pids, hex
+// suffixes); anything that could traverse paths or smuggle option-like text
+// is rejected before it is used. PREVIEW_ID_RE mirrors the helper's RUN_ID_RE.
+const SAFE_RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const PREVIEW_ID_RE = /^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$/;
 const Config = z.object({ enabled: z.boolean().default(true) });
 
 /**
@@ -299,7 +335,7 @@ export class MemoryRepository {
   }
   async git(args, options = {}) {
     const { env, ...spawnOptions } = options;
-    return await execFile("/usr/bin/git", ["-C", this.root, ...args], {
+    return await execFile(await gitExecutable(), ["-C", this.root, ...args], {
       encoding: "utf8",
       ...spawnOptions,
       env: env === undefined ? process.env : { ...process.env, ...env },
@@ -804,6 +840,7 @@ export class MemoryRepository {
   async rollback(request) {
     if (request?.confirmation !== "ROLLBACK_MEMORY") return failure("rollback-invalid-confirmation");
     if (typeof request?.runId !== "string" || request.runId.length === 0) return failure("rollback-run-not-found");
+    if (!SAFE_RUN_ID_RE.test(request.runId)) return failure("rollback-run-not-found");
     const root = await this.inspect().catch(() => null);
     if (root === null) return failure("repo-unavailable");
     const run = await this.readRun(root, request.runId);
@@ -1204,7 +1241,8 @@ export class MemoryRepository {
    * preview record is removed. Returns the same shape as a sync apply.
    */
   async applyPreview(request) {
-    if (request?.previewId === undefined || typeof request.previewId !== "string" || request.previewId.length === 0) {
+    if (request?.previewId === undefined || typeof request.previewId !== "string" || request.previewId.length === 0
+      || !PREVIEW_ID_RE.test(request.previewId)) {
       return failure("preview-invalid-request");
     }
     let root;
@@ -1253,7 +1291,8 @@ export class MemoryRepository {
 
   /** Remove a pending preview without applying it. */
   async discardPreview(request) {
-    if (request?.previewId === undefined || typeof request.previewId !== "string" || request.previewId.length === 0) {
+    if (request?.previewId === undefined || typeof request.previewId !== "string" || request.previewId.length === 0
+      || !PREVIEW_ID_RE.test(request.previewId)) {
       return failure("preview-invalid-request");
     }
     try {

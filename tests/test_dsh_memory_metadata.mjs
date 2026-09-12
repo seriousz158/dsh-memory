@@ -61,6 +61,9 @@ source_rollouts:
 {
   // Invalid schema version fails closed.
   assert.throws(() => parseFrontMatter("---\nschema_version: 2\nid: x\n---\n", "handbook/x.md"), (error) => error instanceof MetadataError && error.code === "invalid-schema-version");
+  // Decimal scalars stay strings for parity with the staging validator in
+  // sync-apply.py: `1.0` must fail here too, not only at sync time.
+  assert.throws(() => parseFrontMatter("---\nschema_version: 1.0\nid: x\n---\n", "handbook/x.md"), (error) => error instanceof MetadataError && error.code === "invalid-schema-version");
 }
 
 {

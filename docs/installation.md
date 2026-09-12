@@ -101,11 +101,18 @@ The sync command does not install DSH. It requires a `dsh` executable on `PATH`,
 The wrapper also discovers a local Homebrew or nvm Node runtime when launchd
 starts with a minimal `PATH`; no interactive shell profile is required.
 
-The v0.8.4 host and UI packages still declare the runtime peer range
-`@deepseek-ai/dsh@^0.1.0-rc.6`, so DSH `rc.6` remains peer-compatible. The
-repository's reproducible clean-room and local integration baseline is
-`0.1.0-rc.7`, because the registry's `rc.6` transitive peer graph is not
-resolvable by plain `npm ci`. DSH `rc.8` and later are unverified. Avoid an
-unversioned `npx` or global install that can silently select a newer
-prerelease; verify the selected executable with `dsh --version` before
-installation and testing.
+The v0.9.x host package declares the runtime peer range
+`@deepseek-ai/dsh@^0.1.0-rc.6`, and the UI package declares its client-module
+peers (`@deepseek-ai/dsh-api-remotes`, `-client-connection`, `-client-runtime`,
+`-client-ui-settings`) on the same range, so DSH `rc.6` remains
+peer-compatible. The repository's reproducible clean-room and local
+integration baseline is `0.1.0-rc.7`, because the registry's `rc.6` transitive
+peer graph is not resolvable by plain `npm ci`. DSH `rc.8` and later are
+unverified. Avoid an unversioned `npx` or global install that can silently
+select a newer prerelease; verify the selected executable with `dsh --version`
+before installation and testing.
+
+The two install paths are mutually exclusive: the public `dsh-git-memory`
+bundle already contains the host and UI halves, so adding it on top of a
+manual `cordis.patch.yml` install (or the reverse) would register the memory
+settings row and its remote twice. Pick one path per profile.
