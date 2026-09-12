@@ -114,8 +114,46 @@ if [[ "$management_modes" -gt 1 ]]; then
   exit 2
 fi
 
+# Preview ids become filesystem paths under .sync/previews and reach rm/cp in
+# this script. Enforce the helper's id format here as well instead of relying
+# on the helper running first: YYYYMMDDTHHMMSSZ-<8 lowercase hex>.
+for preview_id_arg in "$PREVIEW_ID" "$APPLY_PREVIEW" "$DISCARD_PREVIEW"; do
+  [[ -n "$preview_id_arg" ]] || continue
+  if [[ ! "$preview_id_arg" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$ ]]; then
+    print -u2 -- "dsh-memory-sync: invalid preview id: $preview_id_arg"
+    exit 2
+  fi
+done
+
 PYTHON_BIN="${DPSK_PYTHON3:-python3}"
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || { print -u2 -- "dsh-memory-sync: python3 is required"; exit 127; }
+
+# Portable file metadata. `stat -f` is BSD syntax; on GNU/Linux `-f` enters
+# filesystem mode where %z is not a directive, which silently disabled the
+# raw-size cap. Probe once and dispatch per flavor (a digits-only answer is
+# the size; GNU answers filesystem info instead). file_size takes an optional
+# fallback value for callers that use a negative sentinel on failure.
+if [[ "$(stat -f %z . 2>/dev/null)" == <-> ]]; then
+  file_size() { stat -f %z -- "$1" 2>/dev/null || print "${2:-0}"; }
+  file_mtime() { stat -f %m -- "$1" 2>/dev/null || print -1; }
+  marker_display() { stat -f '%Sm' -- "$1" 2>/dev/null || print "$1"; }
+elif [[ "$(stat -c %s . 2>/dev/null)" == <-> ]]; then
+  file_size() { stat -c %s -- "$1" 2>/dev/null || print "${2:-0}"; }
+  file_mtime() { stat -c %Y -- "$1" 2>/dev/null || print -1; }
+  marker_display() { stat -c %y -- "$1" 2>/dev/null || print "$1"; }
+else
+  file_size() { wc -c < "$1" 2>/dev/null || print "${2:-0}"; }
+  file_mtime() { print -1; }
+  marker_display() { print "$1"; }
+fi
+# shasum ships with macOS but is absent on minimal Linux images; sha256sum is
+# the inverse there. Resolve the digest command once.
+typeset -a SHA256_DIGEST_CMD
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA256_DIGEST_CMD=(sha256sum)
+else
+  SHA256_DIGEST_CMD=(shasum -a 256)
+fi
 
 # launchd starts agents with a minimal PATH. The pinned DSH launcher is a
 # `#!/usr/bin/env node` script, so make a discovered Node runtime available to
@@ -218,17 +256,17 @@ write_failure_record() {
 candidate_digest() {
   local file
   if [[ "$#" -eq 0 ]]; then
-    print -r -- "sha256:$(printf '' | shasum -a 256 | awk '{print $1}')"
+    print -r -- "sha256:$(printf '' | "${SHA256_DIGEST_CMD[@]}" | awk '{print $1}')"
     return
   fi
   for file in "$@"; do
     printf '%s  ' "$file"
-    shasum -a 256 -- "$file" | awk '{print $1}'
-  done | shasum -a 256 | awk '{print "sha256:" $1}'
+    "${SHA256_DIGEST_CMD[@]}" -- "$file" | awk '{print $1}'
+  done | "${SHA256_DIGEST_CMD[@]}" | awk '{print "sha256:" $1}'
 }
 
 candidate_file_digest() {
-  shasum -a 256 -- "$1" | awk '{print $1}'
+  "${SHA256_DIGEST_CMD[@]}" -- "$1" | awk '{print $1}'
 }
 
 pending_candidate_lines() {
@@ -338,10 +376,15 @@ for record in sys.argv[2:]:
         "complete": complete == "1",
     }
 # Entries this run did not touch stay only while they still describe real
-# deferred work; completed entries for vanished sessions are dropped.
+# deferred work: incomplete (deferred) entries survive so their recorded
+# resume chunk is kept; completed entries are kept only while their session
+# file still exists (they dedupe re-delivery while a held watermark still
+# covers them) and are dropped once the session has vanished.
 for path in [key for key in list(entries) if key not in batch_paths]:
     state = entries[path]
-    if not (isinstance(state, dict) and state.get("complete") is True):
+    if not isinstance(state, dict):
+        del entries[path]
+    elif state.get("complete") is True and not os.path.exists(path):
         del entries[path]
 live = {path: state for path, state in entries.items() if state}
 if not live:
@@ -435,7 +478,7 @@ emit_scan_only() {
   local digest
   local first=1
   for candidate in "${CANDIDATE_FILES[@]}"; do
-    size="$(stat -f %z -- "$candidate" 2>/dev/null || print 0)"
+    size="$(file_size "$candidate")"
     digest="$(candidate_file_digest "$candidate")"
     (( first == 1 )) || candidates_json+=","
     first=0
@@ -470,7 +513,7 @@ if [[ -n "$APPLY_PREVIEW" ]]; then
     exit 1
   }
   apply_out="$(sync_apply apply-preview --root "$DSH_MEMORY_ROOT" --run-id "$APPLY_PREVIEW" --operation-name preview --started-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" || {
-    apply_error="$(printf '%s' "$apply_out" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null || echo preview-apply-failed)"
+    apply_error="$(printf '%s' "$apply_out" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["error"]["code"])' 2>/dev/null || echo preview-apply-failed)"
     sync_apply release-lock --root "$DSH_MEMORY_ROOT" --run-id "$APPLY_PREVIEW" >/dev/null 2>&1 || true
     print -u2 -- "dsh-memory-sync: preview apply failed: $apply_error"
     exit 1
@@ -485,7 +528,7 @@ if [[ -n "$DISCARD_PREVIEW" ]]; then
     print -u2 -- "dsh-memory-sync: preview discard failed: preview not found"
     exit 1
   }
-  removed="$(printf '%s' "$discard_out" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["value"]["removed"])' 2>/dev/null || echo false)"
+  removed="$(printf '%s' "$discard_out" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["value"]["removed"])' 2>/dev/null || echo false)"
   if [[ "$removed" != "True" ]]; then
     print -u2 -- "dsh-memory-sync: preview discard failed: preview not found"
     exit 1
@@ -500,7 +543,7 @@ CANDIDATE_FILES=()
 if [[ -f "$MARKER" ]]; then
   while IFS= read -r candidate; do
     [[ -n "$candidate" ]] && CANDIDATE_FILES+=("$candidate")
-  done < <(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$MARKER" ! -newermt '-1 hour' -print 2>/dev/null | sort)
+  done < <(find "$DSH_HOME/sessions" -type f -name 'session.jsonl.zstd' -newer "$MARKER" ! -newermt '-1 hour' -print 2>/dev/null | sort)
   # A capped batch intentionally leaves the watermark unchanged. Re-add the
   # pending paths on the next run, then drop entries that are already fully
   # delivered so a new session cannot cause the previous batch to be sent to
@@ -532,7 +575,7 @@ if [[ -f "$MARKER" ]]; then
   typeset -a LIMITED_CANDIDATES
   LIMITED_CANDIDATES=()
   for candidate in "${CANDIDATE_FILES[@]}"; do
-    local_size="$(stat -f %z -- "$candidate" 2>/dev/null || print 0)"
+    local_size="$(file_size "$candidate")"
     if (( local_size > MAX_SESSION_FILE_BYTES )); then
       # v0.8.4: oversized raw sessions are rejected per candidate instead of
       # aborting the batch; the watermark below never advances past them.
@@ -557,7 +600,7 @@ if [[ -f "$MARKER" ]]; then
       # read-only inspection must never clear pending state as a side effect.
       if (( REJECTED_CANDIDATE_COUNT == 0 )); then
         [[ "$PREVIEW_MODE" == "0" ]] && rm -f -- "$PENDING_CANDIDATES"
-        echo "dsh-memory-sync: no new idle session logs since $(stat -f '%Sm' "$MARKER"), nothing to do."
+        echo "dsh-memory-sync: no new idle session logs since $(marker_display "$MARKER"), nothing to do."
       else
         # Rejected candidates hold the watermark and their pending state so
         # the next run can retry them once the operator intervenes.
@@ -593,6 +636,47 @@ fi
 [[ -f "$SYNC_APPLY" ]] || { print -u2 -- "dsh-memory-sync: sync helper is missing: $SYNC_APPLY"; exit 127; }
 
 START_TS=$(date +%s)
+# Idle-window boundary for the watermark. Candidates exclude files modified
+# within the last hour (the idle guard), so a watermark that advances to
+# START_TS would skip any session whose final write lands inside that window
+# and is never reopened — permanently, because nothing else records it. All
+# idle-excluded files are newer than every processed candidate, so advancing
+# to one second before the OLDEST idle-excluded file loses nothing and
+# re-delivers nothing. WATERMARK_ADVANCE_TS is the cutoff the finalize step
+# stamps; an empty value means "hold the watermark entirely".
+WATERMARK_ADVANCE_TS="$START_TS"
+IDLE_GUARDED_COUNT=0
+IDLE_OLDEST_TS=""
+if [[ -f "$MARKER" ]]; then
+  idle_excluded_find=(find "$DSH_HOME/sessions" -type f -name 'session.jsonl.zstd' -newer "$MARKER" -newermt '-1 hour' -print)
+else
+  idle_excluded_find=(find "$DSH_HOME/sessions" -type f -name 'session.jsonl.zstd' -newermt '-1 hour' -print)
+fi
+while IFS= read -r idle_file; do
+  [[ -n "$idle_file" ]] || continue
+  idle_mtime="$(file_mtime "$idle_file")"
+  [[ "$idle_mtime" == <-> ]] || continue
+  IDLE_GUARDED_COUNT=$((IDLE_GUARDED_COUNT + 1))
+  if [[ -z "$IDLE_OLDEST_TS" ]] || (( idle_mtime < IDLE_OLDEST_TS )); then
+    IDLE_OLDEST_TS=$idle_mtime
+  fi
+done < <("${idle_excluded_find[@]}" 2>/dev/null | sort)
+if [[ -n "$IDLE_OLDEST_TS" ]]; then
+  WATERMARK_ADVANCE_TS=$(( IDLE_OLDEST_TS - 1 ))
+  progress "$IDLE_GUARDED_COUNT session file(s) still inside the one-hour idle guard; the watermark will advance only to the idle-window boundary."
+fi
+# Pin the marker's mtime to the intended cutoff after finalize: writing
+# .last-sync leaves an mtime of "now", which would silently widen the next
+# scan window past sessions written while this run was in flight.
+pin_last_sync_mtime() {
+  [[ -f "$MARKER" ]] || return 0
+  "$PYTHON_BIN" - "$MARKER" "$1" <<'PINPY'
+import os
+import sys
+
+os.utime(sys.argv[1], (int(sys.argv[2]), int(sys.argv[2])))
+PINPY
+}
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-$(/usr/bin/uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-' | cut -c1-8)
 STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 CANDIDATE_MANIFEST_TMP=""
@@ -639,7 +723,7 @@ recover_output="$(sync_apply recover-active --root "$DSH_MEMORY_ROOT")" || {
   print -u2 -- "dsh-memory-sync: active run recovery failed: $recover_output"
   exit 1
 }
-recovered="$(printf '%s' "$recover_output" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["value"]["recovered"])')"
+recovered="$(printf '%s' "$recover_output" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["value"]["recovered"])')"
 if [[ "$recovered" == "True" ]]; then
   progress "recovered an interrupted run; see the run journal."
 fi
@@ -647,15 +731,21 @@ sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation
   --phase staging --started-at "$STARTED_AT" >/dev/null
 
 # --- Transaction setup: an isolated staging worktree + baseline manifest ---
-STAGING_PARENT="${TMPDIR:-/tmp}/dsh-memory-sync-$$"
+# mktemp -d is exclusive and 0700: a predictable PID-based name in a shared
+# TMPDIR could be pre-created (or symlinked) by another local user, and
+# stage-copy would then write the private repository copy through it.
+umask 077
+STAGING_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/dsh-memory-sync.XXXXXX")"
+[[ -n "$STAGING_PARENT" && -d "$STAGING_PARENT" ]] || {
+  print -u2 -- "dsh-memory-sync: unable to create a private staging directory"
+  exit 1
+}
 STAGING="$STAGING_PARENT/staging"
 MANIFEST="$STAGING_PARENT/manifest.json"
 HEADLESS_SESSION_ROOT="$STAGING_PARENT/headless-sessions"
 HEADLESS_SESSION_PATCH="$STAGING_PARENT/headless-session.patch.yml"
 SANITIZED_INPUT_ROOT="$STAGING/.dsh-memory-inputs"
 CANDIDATE_MANIFEST_TMP="$STAGING/.dsh-memory-candidates.txt"
-mkdir -p "$STAGING_PARENT"
-umask 077
 
 apply_output=""
 if ! apply_output="$(sync_apply stage-copy --root "$DSH_MEMORY_ROOT" --staging "$STAGING" --manifest "$MANIFEST" --run-id "$RUN_ID")"; then
@@ -743,7 +833,7 @@ if [[ "${#CANDIDATE_FILES}" -gt 0 ]]; then
     resume_chunk=""
     for (( chunk_no = next_chunk; chunk_no <= chunk_total; chunk_no++ )); do
       chunk_path="$chunk_dir/$session_base.chunk$(printf '%02d' "$chunk_no").md"
-      chunk_size="$(stat -f %z -- "$chunk_path" 2>/dev/null || print -1)"
+      chunk_size="$(file_size "$chunk_path" -1)"
       if (( chunk_size < 0 )); then
         write_failure_record "input-filter-failed" staging
         print -u2 -- "dsh-memory-sync: failed to filter a candidate session: missing chunk $chunk_no"
@@ -874,17 +964,17 @@ difference=""
 if ! difference="$(sync_apply diff --staging "$STAGING" --manifest "$MANIFEST" --run-id "$RUN_ID")"; then
   diff_error="$(json_error_code "$difference")"
   write_failure_record "$diff_error" validating "$difference"
-  diff_details="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin).get("error",{}); print(" ".join(f"{k}={v}" for k,v in sorted(d.items()) if k not in ("code",)))' 2>/dev/null || true)"
+  diff_details="$(printf '%s' "$difference" | "$PYTHON_BIN" -c 'import json,sys; d=json.load(sys.stdin).get("error",{}); print(" ".join(f"{k}={v}" for k,v in sorted(d.items()) if k not in ("code",)))' 2>/dev/null || true)"
   print -u2 -- "dsh-memory-sync: staging diff failed: $diff_error${diff_details:+ ($diff_details)}"
   rm -rf -- "$STAGING_PARENT"
   exit 1
 fi
 
-changed_paths="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["added"]+d["modified"]+d["deleted"])))')"
-diff_added="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["added"])))')"
-diff_modified="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["modified"])))')"
-diff_deleted="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["deleted"])))')"
-diff_bytes="$(printf '%s' "$difference" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["value"].get("changed_bytes", 0))')"
+changed_paths="$(printf '%s' "$difference" | "$PYTHON_BIN" -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["added"]+d["modified"]+d["deleted"])))')"
+diff_added="$(printf '%s' "$difference" | "$PYTHON_BIN" -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["added"])))')"
+diff_modified="$(printf '%s' "$difference" | "$PYTHON_BIN" -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["modified"])))')"
+diff_deleted="$(printf '%s' "$difference" | "$PYTHON_BIN" -c 'import json,sys; d=json.load(sys.stdin)["value"]; print(",".join(sorted(d["deleted"])))')"
+diff_bytes="$(printf '%s' "$difference" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["value"].get("changed_bytes", 0))')"
 json_list() { [[ -z "$1" ]] && printf '[]' || printf '[%s]' "$(printf '%s' "$1" | /usr/bin/sed 's/\([^,]*\)/"\1"/g')"; }
 
 if [[ -z "$changed_paths" ]]; then
@@ -902,7 +992,7 @@ if [[ -z "$changed_paths" ]]; then
     # truncation, deferrals, and rejections all hold it in place so the
     # unresolved candidates are rescanned on the next run.
     if [[ "$CANDIDATE_TRUNCATED" == "0" && "$DEFERRED_CANDIDATE_COUNT" == "0" && "$REJECTED_CANDIDATE_COUNT" == "0" ]]; then
-      FINALIZE_LAST_SYNC_ARGS=(--last-sync "$START_TS")
+      FINALIZE_LAST_SYNC_ARGS=(--last-sync "$WATERMARK_ADVANCE_TS")
     fi
     DURATION_MS=$(( ( $(date +%s) - START_TS ) * 1000 ))
     finalize_output=""
@@ -928,6 +1018,9 @@ if [[ -z "$changed_paths" ]]; then
         --candidate-digest "$CANDIDATE_DIGEST" >/dev/null 2>&1 || true
       print -u2 -- "dsh-memory-sync: finalize failed"
       exit 1
+    fi
+    if [[ ${#FINALIZE_LAST_SYNC_ARGS[@]} -gt 0 ]]; then
+      pin_last_sync_mtime "$WATERMARK_ADVANCE_TS"
     fi
     write_pending_candidates
     sync_apply clear-failure-sentinel --root "$DSH_MEMORY_ROOT" >/dev/null 2>&1 || true
@@ -995,8 +1088,8 @@ apply_result="$(sync_apply apply --root "$DSH_MEMORY_ROOT" --staging "$STAGING" 
   exit 1
 }
 
-recovery_commit="$(printf '%s' "$apply_result" | /usr/bin/python3 -c 'import json,sys; v=json.load(sys.stdin)["value"]; print(v.get("recovery_commit") or "")')"
-apply_commit="$(printf '%s' "$apply_result" | /usr/bin/python3 -c 'import json,sys; v=json.load(sys.stdin)["value"]; print(v.get("apply_commit") or "")')"
+recovery_commit="$(printf '%s' "$apply_result" | "$PYTHON_BIN" -c 'import json,sys; v=json.load(sys.stdin)["value"]; print(v.get("recovery_commit") or "")')"
+apply_commit="$(printf '%s' "$apply_result" | "$PYTHON_BIN" -c 'import json,sys; v=json.load(sys.stdin)["value"]; print(v.get("apply_commit") or "")')"
 
 # Journal the run and advance the watermark only after a successful apply.
 DURATION_MS=$(( ( $(date +%s) - START_TS ) * 1000 ))
@@ -1006,7 +1099,7 @@ finalize_output=""
 typeset -a FINALIZE_LAST_SYNC_ARGS
 FINALIZE_LAST_SYNC_ARGS=()
 if [[ "$CANDIDATE_TRUNCATED" == "0" && "$DEFERRED_CANDIDATE_COUNT" == "0" && "$REJECTED_CANDIDATE_COUNT" == "0" ]]; then
-  FINALIZE_LAST_SYNC_ARGS=(--last-sync "$START_TS")
+  FINALIZE_LAST_SYNC_ARGS=(--last-sync "$WATERMARK_ADVANCE_TS")
 fi
 if ! finalize_output="$(sync_apply finalize \
   --root "$DSH_MEMORY_ROOT" \
@@ -1032,6 +1125,9 @@ if ! finalize_output="$(sync_apply finalize \
   print -u2 -- "dsh-memory-sync: finalize failed"
   rm -rf -- "$STAGING_PARENT"
   exit 1
+fi
+if [[ ${#FINALIZE_LAST_SYNC_ARGS[@]} -gt 0 ]]; then
+  pin_last_sync_mtime "$WATERMARK_ADVANCE_TS"
 fi
 write_pending_candidates
 sync_apply clear-failure-sentinel --root "$DSH_MEMORY_ROOT" >/dev/null 2>&1 || true
