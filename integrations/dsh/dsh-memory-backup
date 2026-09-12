@@ -18,13 +18,16 @@
  */
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, readFile, stat, writeFile, readdir } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, writeFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const execFile = promisify(execFileCallback);
 const DSH_HOME = resolve(process.env.DSH_HOME || join(homedir(), ".dsh"));
 const MEMORY_ROOT = resolve(process.env.DSH_MEMORY_ROOT || join(DSH_HOME, "storages", "memory"));
+// An explicit override wins, then PATH, then the historical absolute location:
+// Git does not live at /usr/bin/git on every supported host.
+const GIT_EXECUTABLE = process.env.DPSK_GIT || "git";
 
 function fail(code, message) {
   process.stderr.write(`dsh-memory-backup: ${message}\n`);
@@ -32,7 +35,7 @@ function fail(code, message) {
 }
 
 async function git(root, args) {
-  const { stdout } = await execFile("/usr/bin/git", ["-C", root, ...args], { encoding: "utf8" });
+  const { stdout } = await execFile(GIT_EXECUTABLE, ["-C", root, ...args], { encoding: "utf8" });
   return stdout.trim();
 }
 
@@ -53,22 +56,38 @@ async function manifest() {
   const count = (await git(MEMORY_ROOT, ["rev-list", "--count", "HEAD"])).trim();
   const files = await walk(MEMORY_ROOT);
   const payload = files.filter((file) => !file.includes("/.git/") && !file.endsWith("/.git")).map((file) => file.slice(MEMORY_ROOT.length + 1));
-  const size = (await stat(MEMORY_ROOT)).size;
+  const payloadFiles = payload.filter((file) => !file.startsWith(".sync/") && file !== ".last-sync" && file !== "README.md");
+  // Sum the payload file sizes; the directory inode size that previously
+  // populated this field carried no information about the payload.
+  let payloadBytes = 0;
+  for (const file of payloadFiles) {
+    try { payloadBytes += (await stat(join(MEMORY_ROOT, file))).size; } catch {}
+  }
   return {
     schema_version: 1,
     exported_at: new Date().toISOString(),
     head,
     commit_count: Number(count),
-    payload_files: payload.filter((file) => !file.startsWith(".sync/") && file !== ".last-sync" && file !== "README.md"),
-    payload_size_bytes: size,
+    payload_files: payloadFiles,
+    payload_size_bytes: payloadBytes,
   };
 }
 
 async function exportBundle(bundlePath, dryRun) {
-  await git(MEMORY_ROOT, ["bundle", "create", bundlePath, "--all"]);
   const meta = await manifest();
+  if (dryRun) {
+    // A dry-run never writes the target: report what would be exported and
+    // stop before `git bundle create` touches the destination.
+    process.stdout.write(`dsh-memory-backup: dry-run — would export ${meta.commit_count} commits, ${meta.payload_files.length} payload files to ${bundlePath}\n`);
+    process.stdout.write(`dsh-memory-backup: head ${meta.head}\n`);
+    return;
+  }
+  await git(MEMORY_ROOT, ["bundle", "create", bundlePath, "--all"]);
+  // The bundle is the sensitive artifact (full memory history); keep it as
+  // private as the manifest sidecar instead of the ambient umask.
+  await chmod(bundlePath, 0o600).catch(() => {});
   const sidecar = `${bundlePath}.json`;
-  if (!dryRun) await writeFile(sidecar, JSON.stringify(meta, null, 2) + "\n", { mode: 0o600 });
+  await writeFile(sidecar, JSON.stringify(meta, null, 2) + "\n", { mode: 0o600 });
   process.stdout.write(`dsh-memory-backup: exported ${meta.commit_count} commits, ${meta.payload_files.length} payload files to ${bundlePath}\n`);
   process.stdout.write(`dsh-memory-backup: head ${meta.head} (manifest ${sidecar})\n`);
 }
@@ -81,8 +100,8 @@ async function importBundle(bundlePath, target, dryRun) {
     fail("exists", `target already exists: ${targetRoot}`);
   }
   // Verify the bundle before touching anything.
-  await execFile("/usr/bin/git", ["bundle", "verify", bundlePath]);
-  const head = await execFile("/usr/bin/git", ["bundle", "list-heads", bundlePath], { encoding: "utf8" });
+  await execFile(GIT_EXECUTABLE, ["bundle", "verify", bundlePath]);
+  const head = await execFile(GIT_EXECUTABLE, ["bundle", "list-heads", bundlePath], { encoding: "utf8" });
   if (dryRun) {
     process.stdout.write(`dsh-memory-backup: verified ${bundlePath}\n`);
     process.stdout.write(`dsh-memory-backup: dry-run — would restore to ${targetRoot}\n`);
