@@ -8,7 +8,12 @@ import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
-import { settingsNamespace } from "@deepseek-ai/dsh-settings";
+import * as settingsModule from "@deepseek-ai/dsh-settings";
+// DSH 0.1.0-rc.6/rc.7 exposed a settingsNamespace() helper that formatted the
+// namespace id; newer runtimes removed the helper and accept the plain
+// lowercase namespace directly at register(). Fall back to the identity so
+// the plugin loads on both runtime generations.
+const settingsNamespace = settingsModule.settingsNamespace ?? ((name) => name);
 import {
   acquireOperationLock,
   clearActiveRun,
