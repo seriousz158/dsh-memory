@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
-import { settingsNamespace } from "@deepseek-ai/dsh-settings";
 import {
   acquireOperationLock,
   clearActiveRun,
@@ -33,7 +32,7 @@ import {
 } from "./search-index.js";
 
 const execFile = promisify(execFileCallback);
-const NS = settingsNamespace("memory");
+const NS = "memory";
 const TARGETS = Object.freeze(["summary.md", "handbook", "rollouts", "archive"]);
 export const DEFAULT_DSH_HOME = resolve(process.env.DSH_HOME || join(homedir(), ".dsh"));
 export const DEFAULT_MEMORY_ROOT = resolve(

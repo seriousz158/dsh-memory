@@ -500,7 +500,12 @@ CANDIDATE_FILES=()
 if [[ -f "$MARKER" ]]; then
   while IFS= read -r candidate; do
     [[ -n "$candidate" ]] && CANDIDATE_FILES+=("$candidate")
-  done < <(find "$DSH_HOME/sessions" -name 'session.jsonl.zstd' -newer "$MARKER" ! -newermt '-1 hour' -print 2>/dev/null | sort)
+  done < <(find "$DSH_HOME/sessions" \( -name 'session.jsonl.zstd' -o -name 'session.v3.jsonl.zstd' \) -newer "$MARKER" ! -newermt '-1 hour' -print 2>/dev/null | sort | while IFS= read -r log_path; do
+    # Retained V2 files are rollback artifacts once a V3 generation exists,
+    # including when that V3 file is still active and fails the idle filter.
+    [[ "${log_path:t}" == "session.jsonl.zstd" && -f "${log_path:h}/session.v3.jsonl.zstd" ]] && continue
+    print -r -- "$log_path"
+  done)
   # A capped batch intentionally leaves the watermark unchanged. Re-add the
   # pending paths on the next run, then drop entries that are already fully
   # delivered so a new session cannot cause the previous batch to be sent to
@@ -509,6 +514,12 @@ if [[ -f "$MARKER" ]]; then
   while IFS=$'\t' read -r pending_path pending_digest pending_chunk pending_complete; do
     [[ -n "$pending_path" && -f "$pending_path" ]] || continue
     [[ "$pending_complete" == "1" ]] && continue
+    if [[ "${pending_path:t}" == "session.jsonl.zstd" && -f "${pending_path:h}/session.v3.jsonl.zstd" ]]; then
+      # A chunk cursor is tied to the original physical digest. Never transfer
+      # it to V3 or silently drop a partially delivered generation.
+      print -u2 -- "dsh-memory-sync: session-generation-changed: pending V2 delivery requires reconciliation before V3 sync; watermark unchanged"
+      exit 78
+    fi
     [[ "$(find "$pending_path" -newermt '-1 hour' -print -quit 2>/dev/null)" == "" ]] || continue
     already_listed=0
     for candidate in "${CANDIDATE_FILES[@]}"; do

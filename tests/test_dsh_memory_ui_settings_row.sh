@@ -51,7 +51,7 @@ if rg -q -- '~?/?\.zcode/memory|DSH_MEMORY_ROOT|memoryRoot|rootPath' "$CLIENT"; 
 fi
 node -e '
 const p=require(process.argv[1]);
-const peers=["@deepseek-ai/dsh-api-remotes","@deepseek-ai/dsh-client-connection","@deepseek-ai/dsh-client-runtime","@deepseek-ai/dsh-client-ui-settings","react"];
+const peers=["@deepseek-ai/dsh-api-remotes","@deepseek-ai/dsh-client-connection","@deepseek-ai/dsh-client-ui-settings","react"];
 if (p.private !== true || typeof p.version !== "string" || p.version.length === 0 || p.exports?.["./client"] !== "./lib/client.js" || p.main !== "./lib/index.js" || peers.some((name) => !p.peerDependencies?.[name])) process.exit(1);
 ' "$PACKAGE"
 node --check "$CLIENT"

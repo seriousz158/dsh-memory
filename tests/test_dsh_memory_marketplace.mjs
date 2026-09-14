@@ -20,7 +20,6 @@ assert.equal(manifest.exports["./cordis.patch.yml"], "./packages/dsh-git-memory/
 assert.deepEqual(manifest.dsh?.bundle, { patch: "./packages/dsh-git-memory/cordis.patch.yml" });
 assert.equal(manifest.dsh?.client?.platform, "web");
 assert.deepEqual(manifest.dsh?.client?.inject, [
-  "@deepseek-ai/dsh-client-runtime",
   "@deepseek-ai/dsh-client-connection",
   "@deepseek-ai/dsh-api-remotes",
   "@deepseek-ai/dsh-client-ui-settings",

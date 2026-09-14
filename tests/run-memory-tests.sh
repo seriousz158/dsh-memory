@@ -19,6 +19,7 @@ node tests/test_dsh_memory_retrieval_eval.mjs
 node tests/test_dsh_memory_tools.mjs
 node tests/test_dsh_memory_marketplace.mjs
 python3 tests/test_dsh_memory_sync_failures.py
+python3 tests/test_dsh_memory_sync_v3.py
 node tests/test_dsh_memory_paths.mjs
 node tests/test_dsh_memory_preview.mjs
 node tests/test_dsh_memory_redaction.mjs

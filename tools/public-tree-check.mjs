@@ -22,6 +22,9 @@ const candidates = [...new Set([...tracked, ...untracked])].sort();
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 
 const allowed = new Set([
+  "tools/install-dsh-contract-deps.mjs",
+  "tests/test_dsh_runtime_imports.mjs",
+  "tests/test_dsh_memory_sync_v3.py",
   ".github/dependabot.yml",
   ".github/ISSUE_TEMPLATE/bug.yml",
   ".github/ISSUE_TEMPLATE/feature.yml",

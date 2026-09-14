@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Adapt Host entry points and peer ranges to DSH 0.1.5-rc.1.
+- Add real-runtime import coverage while retaining legacy tests.
+- Scan V3 sessions without duplicate V2 processing; fence pending generation changes.
+
 All notable changes to this project are documented here.
 
 ## [Unreleased]

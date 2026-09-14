@@ -28,3 +28,18 @@ jobs:
           python-version: '3.11'
       - run: npm ci --ignore-scripts
       - run: npm test
+
+  dsh-current-imports:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - name: Install current DSH contract dependencies
+        run: node tools/install-dsh-contract-deps.mjs 0.1.5-rc.1
+      - name: Verify real current-runtime imports
+        run: npm run test:runtime-imports
+        env:
+          DSH_EXPECTED_VERSION: 0.1.5-rc.1
