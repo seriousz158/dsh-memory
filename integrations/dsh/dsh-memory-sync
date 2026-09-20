@@ -623,7 +623,7 @@ cleanup_sync_operation() {
 trap cleanup_sync_operation EXIT
 
 lock_output=""
-if ! lock_output="$(sync_apply acquire-lock --root "$DSH_MEMORY_ROOT" --operation-name sync --run-id "$RUN_ID")"; then
+if ! lock_output="$(sync_apply acquire-lock --root "$DSH_MEMORY_ROOT" --operation-name sync --run-id "$RUN_ID" --pid $$)"; then
   sync_apply lock-rejection --root "$DSH_MEMORY_ROOT" --operation-name sync --run-id "$RUN_ID" \
     --error-code operation-in-progress >/dev/null 2>&1 || true
   print -u2 -- "dsh-memory-sync: another sync operation is in progress"
@@ -831,7 +831,27 @@ STAGING_PROMPT="你是 dsh-memory 的定时记忆整合代理，现在执行一�
 
 步骤：
 1. 逐行读取候选会话清单中的临时脱敏转录，按 README「提炼与整合」一节的提炼要求提炼（无高信号则输出 NO_SIGNAL 并跳过该会话）。
-3. 全部提炼完成后，严格按 README「提炼与整合」一节的整合要求执行 diff 式整合：与旧条目矛盾的内容覆盖旧条目（绝不叠加）——新条目须声明 supersedes: <旧条目 id> 并把旧条目 status 置为 superseded；无法合并的矛盾用 conflicts_with 显式标注；过时内容降级到 $STAGING/archive/；新增 $STAGING/handbook/ 条目必须至少携带 source_rollouts、source_session_digest、source_hash 之一（否则宿主校验会拒绝整个 diff，错误码 missing-provenance）。用户稳定偏好同步进 $STAGING/summary.md。summary.md 最终必须不超过 12 KiB；超出时压缩重复过程和细节，不得静默超过预算。
+3. 全部提炼完成后，严格按 README「提炼与整合」一节的整合要求执行 diff 式整合：与旧条目矛盾的内容覆盖旧条目（绝不叠加）——新条目须声明 supersedes: <旧条目 id> 并把旧条目 status 置为 superseded；无法合并的矛盾用 conflicts_with 显式标注；过时内容降级到 $STAGING/archive/；新增 $STAGING/handbook/ 条目必须至少携带 source_rollouts、source_session_digest、source_hash 之一（否则宿主校验会拒绝整个 diff，错误码 missing-provenance）。用户稳定偏好同步进 $STAGING/summary.md。
+
+【front matter 合法取值（宿主 fail-closed 校验，写错会让**整个 staging diff 被拒**）】
+- type：preference | fact | decision | procedure | constraint | observation
+- status：active | candidate | conflicted | superseded | archived
+- confidence：high | medium | low | unknown
+- created_at / updated_at / review_after / expires_at：YYYY-MM-DD
+- tags / source_rollouts：块列表（缩进或顶格均可），禁止行内「[a, b]」流程写法
+- id：小写字母/数字/连字符，可选一段命名空间（如 aws/ec2-network-benchmarking）
+- 单条正文里的块标量（| 或 >）不被支持
+**绝不要发明新的 type/status/confidence 取值。** 历史事故：某轮写了「type: environment」，
+宿主直接拒绝整批 diff（invalid-metadata），十个会话的提炼全部作废。
+【summary.md 的硬性写作规范（宿主按此校验）】
+summary.md 是**导航层**而非知识层：只放「稳定偏好 / 当前项目指针 / 高置信导航」。
+所有详细证据（金额、SHA、seal、verdict 码、逐轮过程、终态细节）属于 handbook/ 或 rollouts/，
+在 summary 里只能写成指针，不得复制内容。
+- **软目标 ≤ 6 KiB**（要努力达到的目标，不是可以贴着的上限；历史教训：只给 12 KiB 上限时它会稳定饱和在 98%）。硬上限 12 KiB。
+- \`## 最新任务终态\` 一个项目**最多 1 行**，格式：\`- <项目名>：<当前状态短语> → handbook/<文件>.md\`。
+  禁止在该节出现金额、SHA/seal、verdict 码、轮次过程描述。
+- 每次同步都要先看 summary.md 的当前字节数：一旦超过软目标，就主动把最旧的终态条目压成指针
+  （它们已在 handbook 里），不要等撞上限。
 4. 不要执行 git、不要更新同步水位；宿主会负责提交和记录。
 
 收尾用一句话汇报：处理了几个会话、合并了几条记忆。"
@@ -881,6 +901,48 @@ PROCESSED_SESSIONS="$CANDIDATE_SESSIONS"
 # --- Host-side verification and apply ---
 sync_apply write-active --root "$DSH_MEMORY_ROOT" --run-id "$RUN_ID" --operation-name sync \
   --phase validating --started-at "$STARTED_AT" >/dev/null
+# --- 宿主侧内务处理（确定性、幂等）：legacy 补 front matter + 原地归档（方案 a）---
+# 在 diff 之前作用于 staging，与模型产出一起走同一套 fail-closed 校验后提交；
+# 不绕过单写者契约。内务失败不阻断记忆落盘（fail-open）——它只是优化，不是数据入口。
+HOUSEKEEPING_SCRIPT="$SCRIPT_DIR/dsh-memory-housekeeping.py"
+if [[ "${DSH_MEMORY_AUTO_HOUSEKEEPING:-1}" != "0" && -r "$HOUSEKEEPING_SCRIPT" ]]; then
+  if hk_report="$("$PYTHON_BIN" -- "$HOUSEKEEPING_SCRIPT" --staging "$STAGING" \
+        --superseded-grace-days "${DSH_MEMORY_ARCHIVE_SUPERSEDED_DAYS:-30}" \
+        --stale-days "${DSH_MEMORY_ARCHIVE_STALE_DAYS:-180}" 2>&1)"; then
+    hk_line="$(printf '%s' "$hk_report" | "$PYTHON_BIN" -c '
+import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("0 0 1"); raise SystemExit
+print("%d %d %d" % (len(d.get("legacy_migrated",[])), len(d.get("archived",[])), len(d.get("errors",[]))))
+' 2>/dev/null || print -r -- "0 0 1")"
+    hk_legacy="${hk_line%% *}"; hk_rest="${hk_line#* }"
+    hk_arch="${hk_rest%% *}"; hk_err="${hk_rest##* }"
+    print -u2 -- "dsh-memory-sync: 内务处理 迁移 legacy ${hk_legacy} 个，原地归档 ${hk_arch} 个，错误 ${hk_err} 个"
+    [[ "$hk_err" != "0" ]] && print -u2 -- "dsh-memory-sync: 内务处理报告 $hk_report"
+  else
+    print -u2 -- "dsh-memory-sync: 警告 内务处理失败，已跳过（不影响本轮记忆落盘）：$hk_report"
+  fi
+fi
+
+# 兜底（2026-09-19）：summary.md 超预算时，**只丢弃 summary 的改动**，其余记忆照常落盘。
+# 背景：原行为是 summary-too-large 直接否决整个 staging diff —— 一个导航文件不该有能力
+# 否掉十个会话提炼出的全部记忆。把 staging 的 summary 还原成基线内容，diff 便看不到它，
+# 与 stage-copy 产出的 manifest 仍然一致；本轮会在 journal 里以告警留痕。
+SUMMARY_BUDGET_BYTES="${DSH_MEMORY_SUMMARY_BUDGET_BYTES:-12288}"
+if [[ -f "$STAGING/summary.md" ]]; then
+  summary_size="$(/usr/bin/stat -f '%z' "$STAGING/summary.md" 2>/dev/null || print 0)"
+  if (( summary_size > SUMMARY_BUDGET_BYTES )); then
+    print -u2 -- "dsh-memory-sync: 警告 summary.md 超预算（${summary_size} > ${SUMMARY_BUDGET_BYTES} 字节）——只丢弃 summary 的改动，其余记忆照常落盘"
+    if [[ -f "$DSH_MEMORY_ROOT/summary.md" ]]; then
+      /bin/cat -- "$DSH_MEMORY_ROOT/summary.md" > "$STAGING/summary.md"
+    else
+      /bin/rm -f -- "$STAGING/summary.md"
+    fi
+  fi
+fi
+
 difference=""
 if ! difference="$(sync_apply diff --staging "$STAGING" --manifest "$MANIFEST" --run-id "$RUN_ID")"; then
   diff_error="$(json_error_code "$difference")"

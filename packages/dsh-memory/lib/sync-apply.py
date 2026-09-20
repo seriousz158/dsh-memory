@@ -566,17 +566,20 @@ def parse_record_metadata(text, relative):
     for line in match.group(1).splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        list_match = re.match(r"^[ \t]+-\s+(.+)$", line)
+        # 不缩进的块序列（"- item" 顶格）也是合法 YAML；README 只禁止行内
+        # 流程写法（[a, b]），未要求缩进。此处接受两种块写法，避免模型产出
+        # 合法 YAML 却被 fail-closed 拒绝（历史 49 次 invalid-metadata 的来源）。
+        list_match = re.match(r"^[ \t]*-\s+(.+)$", line)
         if list_match and current_key is not None and isinstance(values.get(current_key), list):
             values[current_key].append(parse_metadata_scalar(list_match.group(1)))
             continue
         colon = line.find(":")
         if colon <= 0:
-            raise SyncError("invalid-metadata")
+            raise SyncError("invalid-metadata", {"issue": "line-without-key", "line": line[:120]})
         key = line[:colon].strip()
         raw = line[colon + 1:].strip()
         if raw.startswith("|") or raw.startswith(">"):
-            raise SyncError("invalid-metadata")
+            raise SyncError("invalid-metadata", {"issue": "block-scalar-not-allowed", "line": line[:120]})
         if raw in ("", "[]", "{}"):
             values[key] = []
             current_key = key
@@ -589,34 +592,34 @@ def parse_record_metadata(text, relative):
     if not isinstance(record_id, str) or not ID_RE.fullmatch(record_id):
         raise SyncError("invalid-id")
     if values.get("type") is not None and values.get("type") not in METADATA_TYPES:
-        raise SyncError("invalid-metadata")
+        raise SyncError("invalid-metadata", {"issue": "bad-enum", "field": "type", "value": str(values.get("type"))[:80]})
     if values.get("status") is not None and values.get("status") not in METADATA_STATUSES:
-        raise SyncError("invalid-metadata")
+        raise SyncError("invalid-metadata", {"issue": "bad-enum", "field": "status", "value": str(values.get("status"))[:80]})
     if values.get("confidence") is not None and values.get("confidence") not in METADATA_CONFIDENCES:
-        raise SyncError("invalid-metadata")
+        raise SyncError("invalid-metadata", {"issue": "bad-enum", "field": "confidence", "value": str(values.get("confidence"))[:80]})
     for field in ("created_at", "updated_at"):
         if values.get(field) is not None and (
             not isinstance(values[field], str) or not DATE_RE.fullmatch(values[field])
         ):
-            raise SyncError("invalid-metadata")
+            raise SyncError("invalid-metadata", {"issue": "bad-date", "field": field, "value": str(values.get(field))[:80]})
     for field in ("tags", "source_rollouts"):
         if field in values and not isinstance(values[field], list):
-            raise SyncError("invalid-metadata")
+            raise SyncError("invalid-metadata", {"issue": "not-a-list", "field": field, "value": str(values[field])[:80]})
     if any(not isinstance(tag, str) or not tag or len(tag) > 64 for tag in values.get("tags", [])):
-        raise SyncError("invalid-metadata")
+        raise SyncError("invalid-metadata", {"issue": "bad-tag", "tags": str(values.get("tags"))[:160]})
     for source in values.get("source_rollouts", []):
         if not isinstance(source, str) or not source.startswith("rollouts/") or ".." in source or not source.endswith(".md"):
-            raise SyncError("invalid-metadata")
+            raise SyncError("invalid-metadata", {"issue": "bad-source-rollout", "value": str(source)[:120]})
     for field in ("source_hash", "created_by"):
         if values.get(field) is not None and (
             not isinstance(values[field], str) or not values[field] or len(values[field]) > 128
         ):
-            raise SyncError("invalid-metadata")
+            raise SyncError("invalid-metadata", {"issue": "bad-scalar", "field": field, "value": str(values.get(field))[:80]})
     for field in ("review_after", "expires_at"):
         if values.get(field) is not None and (
             not isinstance(values[field], str) or not DATE_RE.fullmatch(values[field])
         ):
-            raise SyncError("invalid-metadata")
+            raise SyncError("invalid-metadata", {"issue": "bad-date", "field": field, "value": str(values.get(field))[:80]})
     return record_id, values
 
 
@@ -709,7 +712,10 @@ def scan_duplicate_ids(directory_fd, file_iterator, phase, run_id=None):
             text = content.decode("utf-8")
         except UnicodeDecodeError:
             continue
-        record_id, _values = parse_record_metadata(text, relative)
+        try:
+            record_id, _values = parse_record_metadata(text, relative)
+        except SyncError as error:
+            raise SyncError(error.code, {**error.details, "path": relative}) from None
         if record_id is not None:
             if record_id in ids:
                 raise duplicate_error(record_id, ids[record_id], relative, phase, run_id)
@@ -744,7 +750,10 @@ def validate_staging_limits(staging_fd, manifest, phase="staging-diff", run_id=N
             raise SyncError("binary-file")
         if relative == "summary.md" and len(content) > SUMMARY_BUDGET_BYTES:
             raise SyncError("summary-too-large")
-        record_id, values = parse_record_metadata(text, relative)
+        try:
+            record_id, values = parse_record_metadata(text, relative)
+        except SyncError as error:
+            raise SyncError(error.code, {**error.details, "path": relative}) from None
         if record_id is not None:
             if record_id in ids:
                 raise duplicate_error(record_id, ids[record_id], relative, phase, run_id)

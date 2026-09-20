@@ -131,6 +131,40 @@ ${bounded.content}${note}
 </summary_snapshot>`;
 }
 
+/**
+ * 查询分词：拉丁按非字母数字切分，CJK 额外展开为二元组（bigram）。
+ *
+ * 中文没有词间分隔符，而 \p{L} 覆盖全部 CJK 字符，因此
+ * `split(/[^\p{L}\p{N}]+/u)` 会把整句中文变成一个长 token；下游
+ * rawLexicalScore 用 substring 匹配，长中文 token 几乎不可能命中，而
+ * retrieve 又用 filter(record => record.__rawScore > 0) 丢弃 0 分记录，
+ * 于是纯中文查询返回 0 条（实测「记忆系统的已知缺陷与优化路线」0 命中，
+ * 「记忆 系统 缺陷」74 命中）。展开二元组后按相邻二字重叠命中排序；
+ * 原 token 保留，完整短语仍获得应有权重。非 CJK 输入行为不变。
+ */
+const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/;
+function tokenizeQuery(query) {
+  const raw = String(query)
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((token) => token.length > 0);
+  const tokens = [];
+  const seen = new Set();
+  const push = (token) => {
+    if (token.length > 0 && !seen.has(token)) {
+      seen.add(token);
+      tokens.push(token);
+    }
+  };
+  for (const token of raw) {
+    push(token);
+    if (token.length > 2 && CJK_RE.test(token)) {
+      for (let i = 0; i + 2 <= token.length; i += 1) push(token.slice(i, i + 2));
+    }
+  }
+  return tokens;
+}
+
 const SUMMARY_WATCH_INTERVAL_MS = 5000;
 const SUMMARY_REFRESH_DEBOUNCE_MS = 1000;
 /** Poll summary.md and invoke onChange (debounced) after mtime/size changes. */
@@ -961,7 +995,7 @@ export class MemoryRepository {
 
   /** Backwards-compatible raw scan: scored, sorted, archive-filtered. */
   async collectSearchResults(root, query, includeArchive = false, usage = undefined, warnings = undefined) {
-    const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
+    const tokens = tokenizeQuery(query);
     if (tokens.length === 0) throw memoryError("search-invalid-request");
     const { records, warnings: scanWarnings } = await this.scanRecords(root, usage);
     const results = [];
@@ -1012,7 +1046,7 @@ export class MemoryRepository {
     const { records, warnings: scanWarnings } = await this.scanRecords(root, usage);
     warnings.push(...scanWarnings.filter((warning) => inPathScope(warning.path)));
     const candidates = records.filter((record) => inRecordScope(record));
-    const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
+    const tokens = tokenizeQuery(query);
     if (tokens.length === 0) throw memoryError("search-invalid-request");
     for (const record of candidates) {
       const score = this.rawLexicalScore(record, tokens);

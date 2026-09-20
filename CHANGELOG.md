@@ -8,6 +8,52 @@
 
 All notable changes to this project are documented here.
 
+## [0.9.3] - 2026-09-20
+
+### Fixed
+
+- Retrieve unsegmented Chinese queries. Every CJK character matches `\p{L}`, so
+  the query tokenizer collapsed a whole Chinese phrase into a single token;
+  `rawLexicalScore` matches by substring and `retrieve` discards records scoring
+  zero, so a Chinese query without spaces returned nothing at all (measured:
+  `记忆系统的已知缺陷与优化路线` returned 0 hits while `记忆 系统 缺陷` returned 74).
+  Query tokens now also expand into overlapping CJK bigrams, so long Chinese
+  queries match by adjacent-pair overlap and rank by hit count. Non-CJK queries
+  are unchanged.
+- Accept unindented block lists in record front matter. The staging validator
+  (`sync-apply.py`) and the plugin validator (`memory-metadata.js`) both required
+  indentation on list items and rejected valid YAML with `invalid-metadata`,
+  although the metadata contract only forbids flow-style collections. Both now
+  accept either block form while still rejecting `[a, b]` and block scalars.
+- Name the offending path, field and line when front matter is rejected, so a
+  failing run identifies the file instead of reporting a bare error code.
+- Raise `maxBuffer` for the Git index snapshot in the public-tree guard.
+  `execFileSync` defaults to 1 MiB, so the guard failed with
+  `cannot construct Git index snapshot` once the tree grew past that size.
+- Probe the Playwright browser binary before the E2E acceptance test. The guard
+  only checked that `python3` exists, so a Playwright upgrade without a matching
+  `playwright install` broke `npm test` instead of skipping as documented.
+
+### Added
+
+- `integrations/dsh/dsh-memory-housekeeping.py`: a deterministic, idempotent
+  host-side pass that adds minimal schema v1 front matter to legacy records
+  (mirroring the plugin's `legacy-migration.js` id derivation) and archives
+  superseded or long-unreferenced records **in place** through
+  `status: archived`. Records are never moved: `source_rollouts` must start with
+  `rollouts/`, so relocating one into `archive/` would dangle every reference to
+  it.
+
+### Changed
+
+- `integrations/dsh/dsh-memory-sync` now states the permitted front matter values
+  (`type`/`status`/`confidence` enumerations) and a `summary.md` writing budget
+  with a 6 KiB soft target plus a one-line-per-project rule for the
+  recent-terminal-state section, and drops only the summary change when it
+  exceeds the hard budget instead of rejecting the whole diff. The operation lock
+  is keyed to the sync process rather than a short-lived helper, so an
+  interrupted run no longer blocks the next one for six hours.
+
 ## [Unreleased]
 
 ## [0.9.2] - 2026-09-01

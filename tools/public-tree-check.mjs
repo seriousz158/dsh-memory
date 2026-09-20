@@ -7,7 +7,10 @@ import { join, resolve } from "node:path";
 const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
 process.chdir(root);
 
-const gitBuffer = (args) => execFileSync("git", args, { cwd: root, encoding: "buffer" });
+// maxBuffer 必须显式放大：execFileSync 默认 1 MiB，而 `git archive` 整个索引快照
+// 一旦超过 1 MiB 就抛 ENOBUFS，守卫会以 "cannot construct Git index snapshot" 静默失败。
+const gitBuffer = (args) =>
+  execFileSync("git", args, { cwd: root, encoding: "buffer", maxBuffer: 256 * 1024 * 1024 });
 const gitText = (args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
 const nullSeparated = (buffer) => buffer.toString("utf8").split("\0").filter(Boolean);
 const parseIndexRecords = () => nullSeparated(gitBuffer(["ls-files", "--stage", "-z"])).map((record) => {
@@ -46,6 +49,7 @@ const allowed = new Set([
   "examples/dsh/cordis.patch.yml.example",
   "examples/dsh/settings.yaml.example",
   "integrations/dsh/dsh-memory-backup",
+  "integrations/dsh/dsh-memory-housekeeping.py",
   "integrations/dsh/dsh-memory-init",
   "integrations/dsh/dsh-memory-migrate",
   "integrations/dsh/dsh-memory-sync",
@@ -249,9 +253,9 @@ try {
     }
 
     const expectedManifestVersions = {
-      "package.json": "0.9.2",
-      "packages/dsh-memory/package.json": "0.9.2",
-      "packages/dsh-memory-ui/package.json": "0.9.2",
+      "package.json": "0.9.3",
+      "packages/dsh-memory/package.json": "0.9.3",
+      "packages/dsh-memory-ui/package.json": "0.9.3",
     };
     for (const manifestPath of Object.keys(expectedManifestVersions)) {
       const content = readSnapshotText(snapshot, manifestPath);
