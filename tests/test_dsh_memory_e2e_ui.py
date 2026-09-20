@@ -59,6 +59,9 @@ def wait_for(condition, timeout=15, interval=0.25, message="condition"):
     raise AssertionError(f"timed out waiting for {message} (last: {last!r})")
 
 
+AUTH_URLS = {}
+
+
 def open_memory_panel(page, base_url):
     """Navigate to the memory settings panel from a fresh page load.
 
@@ -66,6 +69,12 @@ def open_memory_panel(page, base_url):
     onboarding) until only the app shell remains, then opens the settings
     popover and returns the memory panel locator.
     """
+    if base_url in AUTH_URLS:
+        try:
+            response = page.context.request.get(AUTH_URLS[base_url], timeout=10000)
+            assert response.ok
+        except Exception:
+            raise RuntimeError("DSH browser authentication exchange failed") from None
     page.goto(base_url, wait_until="domcontentloaded", timeout=30000)
     page.wait_for_timeout(4000)
     # The seeded settings.yaml suppresses the internal-testing notice; the
@@ -129,7 +138,7 @@ def stop_service(service: dict | None) -> None:
 def start_service(options=None) -> dict:
     """Start the source-checkout DSH fixture with optional seeded state."""
     options_json = json.dumps(options or {}, ensure_ascii=False)
-    return run_node(
+    service = run_node(
         f'''
         const {{ startIsolatedService }} = await import("./tests/helpers/dsh-e2e-service.mjs");
         const s = await startIsolatedService({options_json});
@@ -137,6 +146,17 @@ def start_service(options=None) -> dict:
         process.exit(0);
         ''',
     )
+    # The launch secret stays in memory; never emit it in test JSON or errors.
+    from urllib.parse import parse_qs, urlsplit
+    text = Path(service["home"], "service.log").read_text()
+    for line in text.splitlines():
+        if not line.startswith("dsh web: "):
+            continue
+        candidate = line.removeprefix("dsh web: ").strip()
+        url = urlsplit(candidate)
+        if url.scheme == "http" and url.netloc == urlsplit(service["baseUrl"]).netloc and "token" in parse_qs(url.query):
+            AUTH_URLS[service["baseUrl"]] = candidate
+    return service
 
 
 def main() -> int:
@@ -288,8 +308,8 @@ def main() -> int:
             # (var(--dsw-*)); the settings UI must not hard-code theme colors.
             # Verify the injected stylesheet references the theme tokens.
             page = browser.new_page(viewport={"width": 1280, "height": 800})
-            page.goto(base_url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(3000)
+            open_memory_panel(page, base_url)
+            page.wait_for_selector('style[data-plugin-css="dsh-memory-ui/style.css"]', state="attached")
             css_text = page.evaluate(
                 "() => Array.from(document.querySelectorAll('style')).map((s) => s.textContent).join(String.fromCharCode(10))",
             )

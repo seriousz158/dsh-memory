@@ -31,11 +31,18 @@ const RUNTIME_ROOT = resolve(
   process.env.DSH_RUNTIME_ROOT
     || join(process.env.HOME || "", "projects", "deepseek-harness", ".dsh"),
 );
-const RUNTIME_HOME = join(RUNTIME_ROOT, "runtime", "dsh-0.1.0-rc.7");
+const RUNTIME_HOME = join(RUNTIME_ROOT, "runtime", `dsh-${process.env.DSH_E2E_VERSION || "0.1.5-rc.1"}`);
 const DSH_BIN = join(RUNTIME_HOME, "node_modules", ".bin", "dsh");
-const SHARED_MODULES = join(RUNTIME_ROOT, "profiles", "node_modules");
+const SHARED_MODULES = join(RUNTIME_HOME, "node_modules");
 
 let service = null;
+
+function redactUrls(text) {
+  return text.replace(/https?:\/\/[^\s"'<>]+/g, value => {
+    try { const url = new URL(value); if (url.search) url.search = "?redacted"; return url.href; }
+    catch { return "[invalid URL]"; }
+  });
+}
 
 function utcString(offsetMs = 0) {
   return new Date(Date.now() + offsetMs).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -116,8 +123,17 @@ export async function startIsolatedService(options = {}) {
   // overriding the two memory entries here is what makes the E2E exercise
   // the checkout rather than the installed profile copy.
   for (const name of await readdir(SHARED_MODULES)) {
-    if (name === "dsh-memory" || name === "dsh-memory-ui") continue;
-    await symlink(join(SHARED_MODULES, name), join(nodeModules, name));
+    if (name.startsWith(".") || name === "dsh-memory" || name === "dsh-memory-ui") continue;
+    if (name.startsWith("@")) {
+      // Keep the scope directory fixture-owned: Host fallback healing must
+      // never traverse a scope symlink into the installed runtime.
+      await mkdir(join(nodeModules, name));
+      for (const child of await readdir(join(SHARED_MODULES, name))) {
+        await symlink(join(SHARED_MODULES, name, child), join(nodeModules, name, child));
+      }
+    } else {
+      await symlink(join(SHARED_MODULES, name), join(nodeModules, name));
+    }
   }
   for (const name of ["dsh-memory", "dsh-memory-ui"]) {
     // Copy into the temporary profile so Node resolves the DSH peer packages
@@ -125,11 +141,19 @@ export async function startIsolatedService(options = {}) {
     // (which would create duplicate Cordis/React module instances).
     await cp(join(ROOT, "packages", name), join(nodeModules, name), { recursive: true });
   }
-  for (const name of ["web", "headless", "dsh-memory", "dsh-memory-ui"]) {
-    const source = name === "dsh-memory" || name === "dsh-memory-ui"
-      ? join(nodeModules, name)
-      : join(RUNTIME_ROOT, "profiles", name);
-    await symlink(source, join(profiles, name), "dir");
+  for (const name of ["dsh-memory", "dsh-memory-ui"]) {
+    await symlink(join(nodeModules, name), join(profiles, name), "dir");
+  }
+  // Never inherit a live profile: its third-party plugins may target another RC.
+  for (const name of ["web", "headless"]) {
+    const dir = join(profiles, name);
+    await mkdir(dir);
+    await writeFile(join(dir, "package.json"), JSON.stringify({
+      private: true,
+      dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", name === "web" ? "@deepseek-ai/dsh-web-app" : "@deepseek-ai/dsh-headless"] } },
+    }));
+    await writeFile(join(dir, "cordis.yml"), "[]\n");
+    await writeFile(join(dir, "cordis.patch.yml"), "[]\n");
   }
 
   // The memory settings UI registers through settings.general.item. A fresh
@@ -191,7 +215,7 @@ export async function startIsolatedService(options = {}) {
   // learning the port while the DSH server keeps running; the PID file lets a
   // later process stop it. Logs go to a file so we can still diagnose failures.
   const logFile = join(home, "service.log");
-  const child = spawn(DSH_BIN, ["web", "--patch", join(home, "e2e.patch.yml"), "--port", String(port)], {
+  const child = spawn(DSH_BIN, ["web", "--patch", join(home, "e2e.patch.yml"), "--port", String(port), "--no-open"], {
     env: { ...process.env, DSH_HOME: home, HOME: home },
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
@@ -217,7 +241,7 @@ export async function startIsolatedService(options = {}) {
       }
       if (child.exitCode !== null) {
         clearTimeout(timeout);
-        reject(new Error(`isolated DSH service exited early (${child.exitCode}): ${service.logs.join("")}`));
+        reject(new Error(`isolated DSH service exited early (${child.exitCode}): ${redactUrls(service.logs.join(""))}`));
         return;
       }
       setTimeout(poll, 250);
@@ -258,7 +282,7 @@ export function waitForHttp(url, timeoutMs = 15_000) {
     const attempt = async () => {
       try {
         const response = await fetch(url);
-        if (response.ok) return resolveReady(response);
+        if (response.ok || response.status === 401) return resolveReady(response);
       } catch {
         // not up yet
       }

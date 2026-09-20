@@ -41,3 +41,26 @@ by the repository's test and integration work.
 | `dsh-memory-sync` | PATH `dsh` or `DSH_BIN` | Prefers the pinned project-local runtime when present |
 | `dsh-memory-backup` | none (pure Git) | `git bundle` export/import |
 | `dsh-memory-migrate` | none (pure Node) | Front matter migration |
+
+## DSH 0.1.5-rc.1
+
+The tested RC is explicitly included in peer ranges. Namespace strings are
+validated by the Host, without importing the removed `settingsNamespace` helper.
+The marketplace aggregate is rebuilt from the same Host source.
+
+Memory sync prefers `session.v3.jsonl.zstd` to a retained V2 generation, including
+when the V3 log is too recent to process. A pending, incomplete V2 delivery next
+to V3 fails closed with `session-generation-changed` (exit 78). Its chunk cursor
+and watermark are retained: do not copy the cursor to V3 or delete pending state
+without reconciling the already-delivered transcript. Completed V2 entries do not
+block processing the new generation.
+
+`npm test` retains the legacy dependency suite. `test:runtime-imports` can target
+an independently installed runtime using `DSH_RUNTIME_NODE_MODULES`, with optional
+`DSH_EXPECTED_VERSION` enforcing the requested version. CI also runs these import
+contracts against current DSH dependencies. These checks do not run paid models.
+
+The unused `dsh-client-runtime` bootstrap dependency was removed: the package
+was retired before 0.1.5. The UI consumes the Host-provided slots/remote services,
+not that legacy module. Current CI pins the transitive DSH peer graph to rc.1
+instead of accidentally combining rc.1 and rc.2.

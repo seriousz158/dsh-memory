@@ -42,7 +42,10 @@ export const CONFIDENCES = Object.freeze(["high", "medium", "low", "unknown"]);
 export const ID_RE = /^[a-z0-9][a-z0-9-]*(\/[a-z0-9][a-z0-9-]*)?$/;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const LIST_ITEM_RE = /^[ \t]+-\s+(.+)$/;
+// 不缩进的块序列（"- item" 顶格）也是合法 YAML；与 sync-apply.py 的
+// parse_record_metadata 保持一致，两者必须接受同样的块写法，
+// 否则同一份记录会被 staging 校验器接受、却被这里判为 invalid-metadata。
+const LIST_ITEM_RE = /^[ \t]*-\s+(.+)$/;
 
 export class MetadataError extends Error {
   constructor(code, message) {

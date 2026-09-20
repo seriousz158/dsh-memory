@@ -1,6 +1,6 @@
 {
   "name": "dsh-git-memory",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "private": false,
   "description": "A local Git-backed long-term memory bundle for DeepSeek Harness",
   "type": "module",
@@ -15,7 +15,6 @@
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/dsh-api-remotes": "0.1.0-rc.7",
     "@deepseek-ai/dsh-client-connection": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.7",
     "@deepseek-ai/dsh-client-ui-settings": "0.1.0-rc.7",
     "@deepseek-ai/dsh-settings": "0.1.0-rc.7",
     "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.7",
@@ -28,7 +27,8 @@
     "test:public-tree": "zsh tests/test_public_tree.sh",
     "test:memory": "zsh tests/run-memory-tests.sh",
     "test:guards": "zsh tests/test_release_guards.sh",
-    "test": "npm run scan:secrets && npm run test:public-tree && npm run test:memory && npm run test:guards"
+    "test": "npm run scan:secrets && npm run test:public-tree && npm run test:memory && npm run test:guards && npm run test:runtime-imports",
+    "test:runtime-imports": "node tests/test_dsh_runtime_imports.mjs"
   },
   "main": "./packages/dsh-git-memory/lib/index.js",
   "exports": {
@@ -66,7 +66,6 @@
     },
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-ui-settings"
@@ -75,13 +74,12 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-api-remotes": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-connection": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-api-remotes": "^0.1.0-rc.6 || 0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-connection": "^0.1.0-rc.6 || 0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6 || 0.1.5-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6 || 0.1.5-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6 || 0.1.5-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6 || 0.1.5-rc.1",
     "@deepseek-ai/schemastery": "^3.18.1",
     "react": "^18.2.0"
   }

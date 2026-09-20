@@ -19,6 +19,7 @@ node tests/test_dsh_memory_retrieval_eval.mjs
 node tests/test_dsh_memory_tools.mjs
 node tests/test_dsh_memory_marketplace.mjs
 python3 tests/test_dsh_memory_sync_failures.py
+python3 tests/test_dsh_memory_sync_v3.py
 node tests/test_dsh_memory_paths.mjs
 node tests/test_dsh_memory_preview.mjs
 node tests/test_dsh_memory_redaction.mjs
@@ -40,8 +41,25 @@ zsh tests/test_dsh_memory_migrate.sh
 
 # Browser E2E against an isolated DSH profile. Requires the Python Playwright
 # installation used for browser acceptance; skipped (exit 0) when unavailable.
-if command -v python3 >/dev/null 2>&1; then
-  python3 tests/test_dsh_memory_e2e_ui.py
-else
+# The probe must cover the *browser binary*, not just python3: Playwright pins a
+# browser revision, so a package upgrade without a matching `playwright install`
+# leaves python3 importable while every launch fails.
+if ! command -v python3 >/dev/null 2>&1; then
   print -u2 -- "dsh-memory e2e: python3 unavailable; skipping"
+elif ! python3 - <<'PROBE' >/dev/null 2>&1
+import os
+import sys
+
+try:
+    from playwright.sync_api import sync_playwright
+except Exception:
+    sys.exit(1)
+
+with sync_playwright() as playwright:
+    sys.exit(0 if os.path.exists(playwright.chromium.executable_path) else 1)
+PROBE
+then
+  print -u2 -- "dsh-memory e2e: Playwright browser unavailable; skipping"
+else
+  python3 tests/test_dsh_memory_e2e_ui.py
 fi
