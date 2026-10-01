@@ -196,7 +196,8 @@ function startSummaryWatcher(onChange) {
 }
 
 export const name = "dsh-memory";
-export const inject = ["settings", "tools"];
+// Settings is optional on the desktop host; tools remains the only required seam.
+export const inject = ["tools"];
 let currentSource = () => ({ enabled: true });
 let refreshPrompt = () => {};
 
@@ -1462,14 +1463,48 @@ decorate(MemoryService, "discardPreview", Remote("discardPreview"));
 decorate(MemoryService, "search", Remote("search"));
 decorate(MemoryService, "context", Remote("context"));
 
+function registerSettingsCompat(ctx, entry) {
+  if (typeof ctx.settings?.register === "function") {
+    return ctx.settings.register(NS, Config, { base: entry });
+  }
+  // DSH 0.1.7 replaced the mutable scope facade with SettingsForms.
+  // Keep one narrow adapter so the memory service remains compatible with both
+  // the legacy Web runtime and the desktop preview without importing private
+  // settings internals.
+  const entryId = entry?.options?.id ?? entry?.id ?? NS;
+  const listeners = new Set();
+  const read = () => {
+    try {
+      const descriptor = ctx.settings.describe().find((row) => row.ns === entryId || row.ns === NS);
+      return descriptor?.value ?? { enabled: true };
+    } catch {
+      return { enabled: true };
+    }
+  };
+  const onUpdated = (ns) => {
+    if (ns !== entryId && ns !== NS) return;
+    for (const listener of [...listeners]) {
+      try { listener(read()); } catch {}
+    }
+  };
+  const stop = ctx.on?.("settings/document-updated", onUpdated);
+  return {
+    get: read,
+    async update(patch) { await ctx.settings.update(entryId, patch); },
+    watch(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    dispose() { listeners.clear(); stop?.(); },
+  };
+}
+
 export function apply(ctx, entry) {
   const settings = new MemorySettingsBridge();
-  const scope = ctx.settings.register(NS, Config, { base: entry });
+  const scope = registerSettingsCompat(ctx, entry);
   settings.bind(scope);
   currentSource = () => scope.get();
   const stopWatching = scope.watch(() => refreshPrompt());
   ctx.effect(() => () => {
     stopWatching();
+    scope.dispose?.();
     settings.unbind(scope);
     currentSource = () => ({ enabled: true });
     refreshPrompt();
@@ -1516,6 +1551,7 @@ export function apply(ctx, entry) {
     const refresh = () => {
       disposeSection?.(); disposeSection = null;
       if (!(currentSource().enabled ?? true)) return;
+      if (typeof promptCtx.systemPrompt?.section !== "function") return;
       void buildMemorySectionText().then((text) => {
         disposeSection = promptCtx.systemPrompt.section({ name: "memory", order: 50, text });
       }).catch(() => {});
@@ -1523,7 +1559,7 @@ export function apply(ctx, entry) {
     refreshPrompt = refresh;
     refresh();
     const stopSummaryWatcher = startSummaryWatcher(refresh);
-    promptCtx.effect(() => () => {
+    promptCtx.effect?.(() => () => {
       stopSummaryWatcher();
       if (refreshPrompt === refresh) refreshPrompt = () => {};
       disposeSection?.();

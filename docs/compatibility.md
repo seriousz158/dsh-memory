@@ -42,6 +42,10 @@ by the repository's test and integration work.
 | `dsh-memory-backup` | none (pure Git) | `git bundle` export/import |
 | `dsh-memory-migrate` | none (pure Node) | Front matter migration |
 
+## DSH 0.1.5-rc.1 and 0.1.7-rc.1
+
+The desktop preview `0.1.7-rc.1` is verified with the Host and client entry points. The desktop profile must use the matching built packages; stale `0.5.0` links are not compatible.
+
 ## DSH 0.1.5-rc.1
 
 The tested RC is explicitly included in peer ranges. Namespace strings are

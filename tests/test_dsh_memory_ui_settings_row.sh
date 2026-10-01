@@ -6,6 +6,7 @@ CLIENT="$PROJECT_DIR/packages/dsh-memory-ui/lib/client.js"
 PACKAGE="$PROJECT_DIR/packages/dsh-memory-ui/package.json"
 
 grep -Fq -- 'ctx.remote.$mount(remote)' "$CLIENT"
+grep -Fq -- 'create: () => ({ parse, safeParse(value)' "$CLIENT"
 grep -Fq -- 'ctx.inject(["remote.memory"], (memoryCtx) => {' "$CLIENT"
 grep -Fq -- 'const memory = memoryCtx.remote.memory;' "$CLIENT"
 grep -Fq -- 'const operationResult = (value) => {' "$CLIENT"
