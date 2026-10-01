@@ -52,6 +52,6 @@ for (const file of files) assert(!file.startsWith(".dsh/"), `npm pack leaked DSH
 
 const host = await import(join(project, "packages/dsh-git-memory/lib/index.js"));
 assert.equal(host.name, "dsh-memory");
-assert.deepEqual(host.inject, ["settings", "tools"]);
+assert.deepEqual(host.inject, ["tools"]);
 
 console.log(`dsh-memory marketplace bundle tests passed (${files.size} package files)`);

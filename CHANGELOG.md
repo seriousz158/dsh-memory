@@ -1,3 +1,7 @@
+## Unreleased
+
+- Verify Host and client entry points against DSH desktop 0.1.7-rc.1; remove the legacy client-runtime injection from the memory UI.
+
 # Changelog
 
 ## Unreleased

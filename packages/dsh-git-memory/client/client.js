@@ -4,7 +4,7 @@ window.__ModuleLoader__.load({
     var module = { exports: {} };
     let jsx = require("react/jsx-runtime");
     let react = require("react");
-    const strict = (parse) => ({ mode: "strict", typeSymbol: "dsh-memory/types#Memory", schema: { parse } });
+    const strict = (parse) => ({ mode: "strict", typeSymbol: "dsh-memory/types#Memory", schema: { parse }, create: () => ({ parse, safeParse(value) { try { return { success: true, data: parse(value) }; } catch (error) { return { success: false, error }; } } }) });
     const result = (value) => { if (!value || typeof value !== "object" || typeof value.ok !== "boolean") throw new Error("invalid memory result"); if (!value.ok && typeof value.error?.code !== "string") throw new Error("invalid memory error"); return value; };
     // The typed Remote client returns its transport receipt around the service result.
     // Consume both layers so UI state sees the stable memory service payload.

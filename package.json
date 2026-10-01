@@ -27,8 +27,9 @@
     "test:public-tree": "zsh tests/test_public_tree.sh",
     "test:memory": "zsh tests/run-memory-tests.sh",
     "test:guards": "zsh tests/test_release_guards.sh",
-    "test": "npm run scan:secrets && npm run test:public-tree && npm run test:memory && npm run test:guards && npm run test:runtime-imports",
-    "test:runtime-imports": "node tests/test_dsh_runtime_imports.mjs"
+    "test": "npm run scan:secrets && npm run test:public-tree && npm run test:memory && npm run test:guards && npm run test:runtime-imports && npm run test:desktop-compat",
+    "test:runtime-imports": "node tests/test_dsh_runtime_imports.mjs",
+    "test:desktop-compat": "node tests/test_dsh_desktop_compat.mjs"
   },
   "main": "./packages/dsh-git-memory/lib/index.js",
   "exports": {
@@ -74,12 +75,12 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-api-remotes": "^0.1.0-rc.6 || 0.1.5-rc.1",
-    "@deepseek-ai/dsh-client-connection": "^0.1.0-rc.6 || 0.1.5-rc.1",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6 || 0.1.5-rc.1",
-    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6 || 0.1.5-rc.1",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6 || 0.1.5-rc.1",
-    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6 || 0.1.5-rc.1",
+    "@deepseek-ai/dsh-api-remotes": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-connection": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1",
     "@deepseek-ai/schemastery": "^3.18.1",
     "react": "^18.2.0"
   }
