@@ -146,4 +146,67 @@ const repository = async (root) => new MemoryRepository({ root, __testOnly: true
   assert.equal(rollback.error.code, "rollback-conflict");
 }
 
+
+async function appliedRun(root, service, runId) {
+  const recoveryCommit = (await git(root, ["rev-parse", "HEAD"])).stdout.trim();
+  await writeFile(join(root, "handbook", "entry.md"), "synced knowledge\n");
+  await writeFile(join(root, "rollouts", "added.md"), "added by sync\n");
+  await git(root, ["add", "handbook/entry.md", "rollouts/added.md"]);
+  await git(root, ["commit", "-m", `DPSK memory sync applied: ${runId}`]);
+  const applyCommit = (await git(root, ["rev-parse", "HEAD"])).stdout.trim();
+  await service.writeRun(root, {
+    schema_version: 1, run_id: runId, operation: "sync", status: "applied",
+    started_at: "2026-08-19T12:00:00Z", finished_at: "2026-08-19T12:01:00Z",
+    candidate_sessions: 1, processed_sessions: 1, skipped_sessions: 0,
+    changed_paths: ["handbook/entry.md", "rollouts/added.md"],
+    recovery_commit: recoveryCommit, apply_commit: applyCommit, error_code: null,
+  });
+  return { recoveryCommit, applyCommit };
+}
+
+{
+  // Rollback refuses to overwrite uncommitted payload edits.
+  const root = await fixture();
+  const service = await repository(root);
+  await appliedRun(root, service, "20260819T140000Z-c3d4e5f6");
+  await writeFile(join(root, "handbook", "entry.md"), "hand edit not yet committed\n");
+  const result = await service.rollback({ runId: "20260819T140000Z-c3d4e5f6", confirmation: "ROLLBACK_MEMORY" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "rollback-dirty-worktree");
+  assert.equal(await readFile(join(root, "handbook", "entry.md"), "utf8"), "hand edit not yet committed\n");
+}
+
+{
+  // A failure after HEAD moved restores the pre-rollback ref and payload.
+  const root = await fixture();
+  const service = await repository(root);
+  await appliedRun(root, service, "20260819T150000Z-d4e5f6a7");
+  const preRollbackHead = (await git(root, ["rev-parse", "HEAD"])).stdout.trim();
+  const writeRun = service.writeRun.bind(service);
+  let journaled = 0;
+  service.writeRun = async (...args) => { journaled += 1; throw new Error("injected journal failure"); };
+  const result = await service.rollback({ runId: "20260819T150000Z-d4e5f6a7", confirmation: "ROLLBACK_MEMORY" });
+  service.writeRun = writeRun;
+  assert.equal(journaled, 1);
+  assert.equal(result.ok, false);
+  assert.equal((await git(root, ["rev-parse", "HEAD"])).stdout.trim(), preRollbackHead);
+  assert.equal(await readFile(join(root, "handbook", "entry.md"), "utf8"), "synced knowledge\n");
+  assert.equal(await readFile(join(root, "rollouts", "added.md"), "utf8"), "added by sync\n");
+  assert.equal((await git(root, ["status", "--porcelain", "--", "summary.md", "handbook", "rollouts", "archive"])).stdout, "");
+}
+{
+  // Journal commits stage only the journal files: runtime state such as the
+  // operation lock must never be committed, even without .sync/.gitignore.
+  const root = await fixture();
+  const service = await repository(root);
+  await mkdir(join(root, ".sync"), { recursive: true });
+  await writeFile(join(root, ".sync", "operation.lock"), "{}\n");
+  await writeFile(join(root, ".sync", "heartbeat.json"), "{}\n");
+  await service.writeRun(root, {
+    schema_version: 1, run_id: "20260819T160000Z-e5f6a7b8", operation: "sync", status: "failed",
+    started_at: "2026-08-19T16:00:00Z", finished_at: "2026-08-19T16:00:01Z", changed_paths: [], error_code: "sync-failed",
+  });
+  const tracked = (await git(root, ["ls-files", ".sync"])).stdout.trim().split("\n").sort();
+  assert.deepEqual(tracked, [".sync/last-run.json", ".sync/runs/20260819T160000Z-e5f6a7b8.json"]);
+}
 console.log("dsh-memory sync transaction tests passed");

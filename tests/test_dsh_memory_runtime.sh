@@ -5,27 +5,28 @@ PROJECT_DIR="$(cd -- "$(dirname -- "$0")/.." && pwd -P)"
 HOST="$PROJECT_DIR/packages/dsh-memory/lib/index.js"
 PACKAGE="$PROJECT_DIR/packages/dsh-memory/package.json"
 
-grep -Fq -- 'export const DEFAULT_DSH_HOME = resolve(process.env.DSH_HOME || join(homedir(), ".dsh"));' "$HOST"
-grep -Fq -- 'process.env.DSH_MEMORY_ROOT || join(DEFAULT_DSH_HOME, "storages", "memory")' "$HOST"
-grep -Fq -- 'export const inject = ["tools"]' "$HOST"
-grep -Fq -- 'function registerSettingsCompat(ctx, entry)' "$HOST"
-grep -Fq -- 'ctx.settings.update(entryId, patch)' "$HOST"
-grep -Fq -- 'ctx.inject(["systemPrompt"]' "$HOST"
-grep -Fq -- 'new MemoryService(ctx, { settings })' "$HOST"
-grep -Fq -- 'Remote("status")' "$HOST"
-grep -Fq -- 'Remote("clear")' "$HOST"
-grep -Fq -- 'Remote("context")' "$HOST"
-grep -Fq -- 'SUMMARY_INJECT_MAX_BYTES' "$HOST"
-grep -Fq -- 'buildMemorySectionText' "$HOST"
-grep -Fq -- 'summary_snapshot' "$HOST"
+command -v rg >/dev/null 2>&1 || { print -u2 -- 'dsh-memory runtime tests require rg'; exit 1; }
+
+# Behavioral module contract instead of exact source text: refactors that keep
+# the exported surface intact must not break this test.
+DSH_HOME=/nonexistent-dsh-home DSH_MEMORY_ROOT= node --input-type=module -e '
+const host = await import(process.argv[1]);
+const fail = (message) => { console.error("dsh-memory runtime: " + message); process.exit(1); };
+if (host.DEFAULT_DSH_HOME !== "/nonexistent-dsh-home") fail("DEFAULT_DSH_HOME must honor DSH_HOME");
+if (host.DEFAULT_MEMORY_ROOT !== "/nonexistent-dsh-home/storages/memory") fail("memory root must default under DSH_HOME");
+if (JSON.stringify(host.inject) !== JSON.stringify(["tools"])) fail("tools must be the only required seam");
+if (typeof host.apply !== "function" || typeof host.Config !== "function") fail("apply and Config must be exported");
+if (typeof host.createSettingsSource !== "function") fail("createSettingsSource must be exported");
+if (host.Config({}).enabled !== true && host.Config({}).enabled?.get?.() !== true) fail("memory.enabled must default to true");
+const remotes = ["getSettings", "setEnabled", "status", "health", "clear", "runs", "rollback", "previews", "applyPreview", "discardPreview", "search", "context"];
+for (const name of remotes) if (typeof host.MemoryService.prototype[name] !== "function") fail("missing remote " + name);
+' "$HOST"
+
+# Prompt and clear-path invariants that are not observable through exports.
+grep -Fq -- 'interpolate: false' "$HOST"
 grep -Fq -- 'UNTRUSTED CONTEXT' "$HOST"
-grep -Fq -- 'defineTool' "$HOST"
-grep -Fq -- 'ctx.tools.register' "$HOST"
-grep -Fq -- 'memory_search' "$HOST"
-grep -Fq -- 'memory_context' "$HOST"
+grep -Fq -- 'SUMMARY_INJECT_MAX_BYTES' "$HOST"
 grep -Fq -- 'safe-clear.py' "$HOST"
-grep -Fq -- 'safeClear(root, "stage")' "$HOST"
-grep -Fq -- 'alternateIndex' "$HOST"
 grep -Fq -- 'unsafe-layout' "$HOST"
 grep -Fq -- 'checkpoint-failed' "$HOST"
 if rg -q -- '\.zcode|browser(?:Path|Root)|request\.(?:path|root)|request\["(?:path|root)"\]' "$HOST"; then
@@ -43,5 +44,7 @@ const peers=["@deepseek-ai/dsh-settings","@deepseek-ai/dsh-typert-protocol","@de
 if (p.private !== true || typeof p.version !== "string" || p.version.length === 0 || p.exports?.["."] !== "./lib/index.js" || p.type !== "module" || peers.some((name) => !p.peerDependencies?.[name])) process.exit(1);
 ' "$PACKAGE"
 node --check "$HOST"
-python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$PROJECT_DIR/packages/dsh-memory/lib/safe-clear.py"
+for script in safe-clear.py sync-apply.py; do
+  python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$PROJECT_DIR/packages/dsh-memory/lib/$script"
+done
 print "dsh-memory runtime tests passed"

@@ -62,13 +62,13 @@ not expose the filesystem root or execute Git directly.
 
 ## Compatibility
 
-`v0.9.3` keeps the DSH `0.1.0-rc.6` peer-compatibility range and has been
-tested and locally integrated with a consistently pinned `0.1.0-rc.7` graph:
+`v0.10.0` targets the DSH desktop app 0.2.x and keeps the 0.1.x web runtime
+peer range:
 
 | Component | Supported version |
 | --- | --- |
-| DSH runtime peer range | `@deepseek-ai/dsh@^0.1.0-rc.6` (rc.6 and rc.7) |
-| Recommended/tested runtime | `0.1.0-rc.7` |
+| DSH desktop app | `0.2.0-rc.2` (peer range `>=0.2.0-rc.2 <0.3.0`) |
+| DSH web runtime peer range | `^0.1.0-rc.6 \|\| 0.1.5-rc.1 \|\| 0.1.7-rc.1` |
 | Clean-room development test graph | DSH client packages `0.1.0-rc.7` |
 | Node.js | 22.x |
 | Python | 3.11.x |
@@ -92,7 +92,14 @@ contains the host plugin, the settings-page client bundle, and its
 ```zsh
 # GitHub source install (works before or without an npm publication)
 dsh plugin --profile web add github:seriousz158/dsh-memory
+
+# DSH desktop app 0.2.x: use the app's bundled CLI and the desktop profile
+"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
+  plugin --profile desktop add github:seriousz158/dsh-memory
 ```
+
+See [docs/installation.md](docs/installation.md#dsh-desktop-app-02x) for the
+desktop profile rules (aggregate bundle only, default memory root).
 
 This project is distributed through GitHub source installs and GitHub Releases.
 It is not published to npm.

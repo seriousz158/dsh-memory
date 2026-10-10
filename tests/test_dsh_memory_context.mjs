@@ -35,6 +35,15 @@ tags:
 ---
 Shared architecture decision beta.
 `);
+// Retired knowledge stays out of the default active scope, with or without a query.
+await writeFile(join(root, "handbook", "retired.md"), `---
+schema_version: 1
+id: project/retired
+type: decision
+status: superseded
+---
+Superseded architecture decision.
+`);
 await writeFile(join(root, "archive", "gamma.md"), "gamma architecture\n");
 await writeFile(join(root, "archive", "legacy.md"), "Shared legacy note.\n");
 await writeFile(join(root, "archive", "long.md"), "长".repeat(2500));
@@ -69,6 +78,23 @@ assert.deepEqual(searched.value.records.map((record) => record.path), [
 assert.equal(searched.value.records[0].usage_count, 2);
 assert.equal(searched.value.records[1].usage_count, 2);
 assert.equal(searched.value.records[0].score > 0, true);
+
+// Query results keep relevance order: heavy past usage of a weaker match
+// must not push the strongest match out of the first slot.
+await writeFile(join(root, "handbook", "zeta.md"), `---
+schema_version: 1
+id: project/architecture-zeta
+type: decision
+---
+Architecture review checklist: architecture ownership, architecture drift.
+`);
+await git(root, ["add", "handbook/zeta.md"]);
+await git(root, ["commit", "-m", "relevance fixture"]);
+for (let index = 0; index < 3; index += 1) await service.context({ query: "alpha", limit: 1 });
+const relevant = await service.context({ query: "architecture", limit: 3 });
+assert.equal(relevant.ok, true);
+assert.equal(relevant.value.records[0].path, "handbook/zeta.md", JSON.stringify(relevant.value.records.map((record) => [record.path, record.usage_count])));
+assert.equal(relevant.value.records.some((record) => record.path === "handbook/retired.md"), false);
 
 const archiveContext = await service.context({ scope: "archive", limit: 10 });
 const legacy = archiveContext.value.records.find((record) => record.path === "archive/legacy.md");

@@ -29,8 +29,16 @@ DSH_HOME="${DSH_HOME:-${HOME:?HOME is required}/.dsh}"
 DSH_MEMORY_ROOT="${DSH_MEMORY_ROOT:-$DSH_HOME/storages/memory}"
 MARKER="$DSH_MEMORY_ROOT/.last-sync"
 PENDING_CANDIDATES="$DSH_MEMORY_ROOT/.sync/pending-candidates.json"
+DSH_BIN_EXPLICIT="${DSH_BIN:-}"
 DSH_BIN="${DSH_BIN:-dsh}"
+# The desktop app ships its CLI inside the bundle and does not put it on PATH.
+DSH_APP_BUNDLE="${DSH_APP_BUNDLE:-/Applications/DeepSeek Harness.app}"
+DSH_APP_CLI_RELATIVE="Contents/Resources/runtime/cli/bin/dsh"
 DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
+case "$DSH_PERMISSION_MODE" in
+  read-only|workspace-write) ;;
+  *) print -u2 -- "dsh-memory-sync: DSH_PERMISSION_MODE must be read-only or workspace-write"; exit 64 ;;
+esac
 SYNC_POLICY_VERSION="${DSH_MEMORY_SYNC_POLICY_VERSION:-v0.9.1}"
 # Model input batch caps: how much sanitized transcript is delivered per run.
 MAX_CANDIDATE_SESSIONS="${DSH_MEMORY_MAX_CANDIDATE_SESSIONS:-10}"
@@ -227,6 +235,89 @@ candidate_digest() {
   done | shasum -a 256 | awk '{print "sha256:" $1}'
 }
 
+# --- Session discovery ------------------------------------------------------
+# DSH names session logs session.jsonl (generation 0) or session.v<N>.jsonl,
+# optionally zstd-compressed (desktop 0.2 writes session.v4.jsonl.zstd). The
+# newest generation in a session directory is authoritative; older files are
+# migration leftovers and are never delivered on their own.
+zmodload -F zsh/stat b:zstat
+zmodload zsh/datetime
+session_log_generation() {
+  local base="${1:t}"
+  base="${base%.zstd}"
+  if [[ "$base" == "session.jsonl" ]]; then
+    print -- 0
+  elif [[ "$base" =~ '^session\.v([0-9]+)\.jsonl$' ]]; then
+    print -- "$(( 10#${match[1]} ))"
+  else
+    print -- -1
+  fi
+}
+highest_session_generation() {
+  local dir="$1" log_path generation best=-1
+  for log_path in "$dir"/session*.jsonl(N) "$dir"/session*.jsonl.zstd(N); do
+    generation="$(session_log_generation "$log_path")"
+    (( generation > best )) && best=$generation
+  done
+  print -- "$best"
+}
+# cwd slugs of throwaway directories: the synchronizer's own staging runs are
+# never a memory source; tmp cwds are skipped unless explicitly opted in.
+session_dir_excluded() {
+  local relative="${1#$DSH_HOME/sessions/}"
+  local slug="${relative%%/*}"
+  [[ "$slug" == *-dsh-memory-sync-*-staging-- ]] && return 0
+  if [[ "${DSH_MEMORY_SYNC_INCLUDE_TMP:-0}" != "1" ]]; then
+    [[ "$slug" == --private-tmp-* || "$slug" == --tmp-* || "$slug" == --private-var-folders-* ]] && return 0
+  fi
+  return 1
+}
+# DSH holds session.lock open for the lifetime of a live session. Probe with
+# lsof instead of flock so the probe can never make the app's own
+# non-blocking claim fail.
+LSOF_BIN="$(command -v lsof 2>/dev/null || { [[ -x /usr/sbin/lsof ]] && print /usr/sbin/lsof; } || true)"
+LSOF_WARNED=0
+session_log_active() {
+  local lock="${1:h}/session.lock"
+  [[ -e "$lock" ]] || return 1
+  if [[ -z "$LSOF_BIN" ]]; then
+    if (( LSOF_WARNED == 0 )); then
+      progress "lsof unavailable; falling back to the one-hour idle rule for active sessions"
+      LSOF_WARNED=1
+    fi
+    return 1
+  fi
+  [[ -n "$("$LSOF_BIN" -t -- "$lock" 2>/dev/null)" ]]
+}
+# Print the authoritative log of every idle session changed since the marker.
+discover_session_logs() {
+  local -A best_path best_generation
+  local log_path dir generation marker_mtime idle_before
+  local -a stat_value
+  for log_path in "$DSH_HOME"/sessions/**/session*.jsonl(N.) "$DSH_HOME"/sessions/**/session*.jsonl.zstd(N.); do
+    generation="$(session_log_generation "$log_path")"
+    (( generation >= 0 )) || continue
+    dir="${log_path:h}"
+    session_dir_excluded "$dir" && continue
+    if [[ -z "${best_generation[$dir]:-}" ]] || (( generation > best_generation[$dir] )) \
+      || { (( generation == best_generation[$dir] )) && [[ "$log_path" == *.zstd ]]; }; then
+      best_generation[$dir]=$generation
+      best_path[$dir]="$log_path"
+    fi
+  done
+  zstat -A stat_value +mtime -- "$MARKER" || return 0
+  marker_mtime=${stat_value[1]}
+  idle_before=$(( EPOCHSECONDS - 3600 ))
+  for dir in ${(ok)best_path}; do
+    log_path="${best_path[$dir]}"
+    zstat -A stat_value +mtime -- "$log_path" || continue
+    # Same window as `find -newer MARKER ! -newermt '-1 hour'`.
+    (( stat_value[1] > marker_mtime && stat_value[1] <= idle_before )) || continue
+    session_log_active "$log_path" && continue
+    print -r -- "$log_path"
+  done
+}
+
 candidate_file_digest() {
   shasum -a 256 -- "$1" | awk '{print $1}'
 }
@@ -366,7 +457,39 @@ finally:
 PY
 }
 
+# Desktop 0.2 stores memory.enabled as the memory entry's config in the
+# profile patch (written by SettingsForms), e.g.
+#   - id: memory
+#     config:
+#       enabled: false
+# Items are evaluated whole, so key order inside an item does not matter.
+profile_patch_disables_memory() {
+  local patch="$1"
+  [[ -f "$patch" ]] || return 1
+  /usr/bin/awk '
+    function finish() { if (is_memory && disabled) found = 1; is_memory = 0; disabled = 0; in_config = 0 }
+    BEGIN { found = 0; squote = sprintf("%c", 39) }
+    /^-/ { finish() }
+    {
+      line = $0
+      sub(/^-/, " ", line)
+      match(line, /^ */)
+      ind = RLENGTH
+      key = substr(line, ind + 1)
+      gsub(/"/, "", key)
+      gsub(squote, "", key)
+    }
+    key ~ /^id:[ \t]*memory[ \t]*(#.*)?$/ { is_memory = 1 }
+    key ~ /^config:[ \t]*(#.*)?$/ { in_config = 1; config_ind = ind; next }
+    in_config && ind <= config_ind && key !~ /^(#.*)?$/ { in_config = 0 }
+    in_config && key ~ /^enabled:[ \t]*false[ \t]*(#.*)?$/ { disabled = 1 }
+    END { finish(); exit found ? 0 : 1 }
+  ' "$patch"
+}
+
 memory_sync_disabled() {
+  profile_patch_disables_memory "$DSH_HOME/profiles/${DSH_PROFILE:-desktop}/cordis.patch.yml" && return 0
+  profile_patch_disables_memory "$DSH_HOME/cordis.patch.yml" && return 0
   local settings="$DSH_HOME/settings.yaml"
   [[ -f "$settings" ]] || return 1
   /usr/bin/awk '
@@ -494,18 +617,37 @@ if [[ -n "$DISCARD_PREVIEW" ]]; then
   exit 0
 fi
 
+# Every real (non scan-only) run leaves a metadata-only heartbeat, including
+# "nothing to do" and failed runs, so a health check can tell a stalled
+# synchronizer from an idle one. It is ignored by .sync/.gitignore.
+SYNC_HEARTBEAT_ENABLED=0
+write_sync_heartbeat() {
+  local code="$1" dir="$DSH_MEMORY_ROOT/.sync" tmp
+  [[ -d "$DSH_MEMORY_ROOT" && ! -L "$dir" ]] || return 0
+  mkdir -p -- "$dir" 2>/dev/null || return 0
+  tmp="$dir/.heartbeat.$$.tmp"
+  if print -r -- "{\"schema_version\":1,\"checked_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"exit_code\":$code,\"candidate_sessions\":${CANDIDATE_SESSIONS:-0},\"truncated\":${CANDIDATE_TRUNCATED:-0}}" > "$tmp" 2>/dev/null; then
+    # The exit hook runs under errexit; no step here may abort it.
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$dir/heartbeat.json" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  fi
+}
+sync_exit_hook() {
+  local code=$?
+  (( $+functions[cleanup_sync_operation] )) && cleanup_sync_operation
+  (( SYNC_HEARTBEAT_ENABLED )) && write_sync_heartbeat "$code"
+  return $code
+}
+trap sync_exit_hook EXIT
+
+[[ "$SCAN_ONLY" == "1" ]] || SYNC_HEARTBEAT_ENABLED=1
 # Zero-cost guard: nothing new since the last sync exits before any DSH run.
 typeset -a CANDIDATE_FILES
 CANDIDATE_FILES=()
 if [[ -f "$MARKER" ]]; then
   while IFS= read -r candidate; do
     [[ -n "$candidate" ]] && CANDIDATE_FILES+=("$candidate")
-  done < <(find "$DSH_HOME/sessions" \( -name 'session.jsonl.zstd' -o -name 'session.v3.jsonl.zstd' \) -newer "$MARKER" ! -newermt '-1 hour' -print 2>/dev/null | sort | while IFS= read -r log_path; do
-    # Retained V2 files are rollback artifacts once a V3 generation exists,
-    # including when that V3 file is still active and fails the idle filter.
-    [[ "${log_path:t}" == "session.jsonl.zstd" && -f "${log_path:h}/session.v3.jsonl.zstd" ]] && continue
-    print -r -- "$log_path"
-  done)
+  done < <(discover_session_logs)
   # A capped batch intentionally leaves the watermark unchanged. Re-add the
   # pending paths on the next run, then drop entries that are already fully
   # delivered so a new session cannot cause the previous batch to be sent to
@@ -514,10 +656,10 @@ if [[ -f "$MARKER" ]]; then
   while IFS=$'\t' read -r pending_path pending_digest pending_chunk pending_complete; do
     [[ -n "$pending_path" && -f "$pending_path" ]] || continue
     [[ "$pending_complete" == "1" ]] && continue
-    if [[ "${pending_path:t}" == "session.jsonl.zstd" && -f "${pending_path:h}/session.v3.jsonl.zstd" ]]; then
+    if (( $(session_log_generation "$pending_path") < $(highest_session_generation "${pending_path:h}") )); then
       # A chunk cursor is tied to the original physical digest. Never transfer
-      # it to V3 or silently drop a partially delivered generation.
-      print -u2 -- "dsh-memory-sync: session-generation-changed: pending V2 delivery requires reconciliation before V3 sync; watermark unchanged"
+      # it to a newer generation or silently drop a partially delivered one.
+      print -u2 -- "dsh-memory-sync: session-generation-changed: pending delivery of ${pending_path:t} requires reconciliation before syncing a newer generation; watermark unchanged"
       exit 78
     fi
     [[ "$(find "$pending_path" -newermt '-1 hour' -print -quit 2>/dev/null)" == "" ]] || continue
@@ -595,8 +737,18 @@ if [[ "$SCAN_ONLY" == "1" ]]; then
 fi
 
 DSH_EXECUTABLE="$(command -v -- "$DSH_BIN" 2>/dev/null || true)"
+if [[ -z "$DSH_EXECUTABLE" && -z "$DSH_BIN_EXPLICIT" ]]; then
+  # An explicit DSH_BIN is authoritative; only the default falls back to the
+  # CLI bundled with the desktop app.
+  for app_bundle in "$DSH_APP_BUNDLE" "$HOME/Applications/DeepSeek Harness.app"; do
+    if [[ -x "$app_bundle/$DSH_APP_CLI_RELATIVE" ]]; then
+      DSH_EXECUTABLE="$app_bundle/$DSH_APP_CLI_RELATIVE"
+      break
+    fi
+  done
+fi
 if [[ -z "$DSH_EXECUTABLE" || ! -x "$DSH_EXECUTABLE" ]]; then
-  print -u2 -- "dsh-memory-sync: DSH executable not found or not executable: $DSH_BIN"
+  print -u2 -- "dsh-memory-sync: DSH executable not found or not executable: $DSH_BIN (also checked $DSH_APP_BUNDLE/$DSH_APP_CLI_RELATIVE)"
   print -u2 -- "dsh-memory-sync: install DSH separately or set DSH_BIN to an executable path."
   exit 127
 fi
@@ -620,7 +772,7 @@ cleanup_sync_operation() {
   fi
   [[ -n "$CANDIDATE_MANIFEST_TMP" ]] && rm -f -- "$CANDIDATE_MANIFEST_TMP"
 }
-trap cleanup_sync_operation EXIT
+# cleanup_sync_operation runs from sync_exit_hook.
 
 lock_output=""
 if ! lock_output="$(sync_apply acquire-lock --root "$DSH_MEMORY_ROOT" --operation-name sync --run-id "$RUN_ID" --pid $$)"; then
@@ -812,10 +964,18 @@ fi
 # profiles, runtime, and credentials policy) unchanged, but route only this
 # child session backend to the per-run private directory. The directory lives
 # under STAGING_PARENT and is removed with the rest of the transaction.
+# DSH 0.2 does not read DSH_PERMISSION_MODE, and a headless profile may ship
+# danger-full-access. Pin the file sandbox in the same overlay (applied after
+# the profile layer): the model may write only inside the staging workspace.
+STAGING_REAL="$(cd -- "$STAGING" && pwd -P)"
 cat > "$HEADLESS_SESSION_PATCH" <<EOF
 - id: session-persistence-jsonl
   config:
     root: $HEADLESS_SESSION_ROOT
+- id: sandbox-policy
+  config:
+    mode: $DSH_PERMISSION_MODE
+    workspaceRoot: $STAGING_REAL
 EOF
 chmod 600 "$HEADLESS_SESSION_PATCH"
 

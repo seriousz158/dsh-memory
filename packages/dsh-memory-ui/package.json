@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-ui",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "private": true,
   "description": "Settings UI for DSH local long-term memory",
   "type": "module",
@@ -35,10 +35,10 @@
     "node": ">=22"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-api-remotes": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || 0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-connection": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || 0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || 0.2.0-rc.2",
+    "@deepseek-ai/dsh-api-remotes": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || >=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-client-connection": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || >=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || >=0.2.0-rc.2 <0.3.0",
     "react": "^18.2.0",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || 0.2.0-rc.2"
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || >=0.2.0-rc.2 <0.3.0"
   }
 }

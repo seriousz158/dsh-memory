@@ -51,6 +51,13 @@ assert.deepEqual(await readActiveRun(root), { runId: "run-3", phase: "applying" 
 assert.equal(await clearActiveRun(root, "run-3"), true);
 assert.equal(await readActiveRun(root), null);
 
+// The host and sync-apply.py write active runs with snake_case run_id; a
+// mismatched key must not strand the record and block every later sync.
+await writeActiveRun(root, { run_id: "run-4", operation: "rollback" });
+assert.equal(await clearActiveRun(root, "wrong-run"), false);
+assert.equal(await clearActiveRun(root, "run-4"), true);
+assert.equal(await readActiveRun(root), null);
+
 await mkdir(join(root, ".sync", "previews", "20260820T120000Z-a1b2c3d4"), { recursive: true });
 await writeFile(join(root, ".sync", "previews", "20260820T120000Z-a1b2c3d4", "preview.json"), JSON.stringify({
   preview_id: "20260820T120000Z-a1b2c3d4",

@@ -1,16 +1,74 @@
-## Unreleased
-
-- Verify Host and client entry points against DSH desktop 0.1.7-rc.1; remove the legacy client-runtime injection from the memory UI.
-
 # Changelog
 
-## Unreleased
+All notable changes to this project are documented here.
 
+## [0.10.0] - Unreleased
+
+### DSH desktop 0.2
+
+- Export a volatile `Config` so desktop `SettingsForms` projects
+  `memory.enabled`; read it from the loader-owned config, apply edits live via
+  `loader/volatile-update`, and write through `SettingsForms.update(<entry id>)`.
+  The legacy `settings.register()` scope is kept for the 0.1.x web runtime.
+- Bind the optional settings service whenever it becomes available instead of
+  sampling it once at startup; a write without any settings backend now fails
+  with `settings-unavailable` instead of reporting success, and an unreadable
+  setting fails closed.
+- Widen peers to `>=0.2.0-rc.2 <0.3.0`; the aggregate bundle declares the
+  settings-slots client seam like the standalone UI package.
+- The synchronizer honors `memory.enabled` from the desktop profile patch and
+  falls back to the desktop app's bundled CLI when `dsh` is not on `PATH`.
+
+### Sync
+
+- Discover every session-log generation (`session.v4.jsonl.zstd` on desktop)
+  and deliver only the newest per session; nothing was synchronized from
+  desktop sessions before this fix.
+- Skip live sessions whose `session.lock` is held, the synchronizer's own
+  staging sessions, and tmp working directories (`DSH_MEMORY_SYNC_INCLUDE_TMP=1`
+  opts tmp back in).
+- Generalize the pending-generation fence (exit 78) to any older generation.
+- Write a metadata-only `.sync/heartbeat.json` on every real run.
+- Journal commits stage only `.sync/runs/<id>.json`, `.sync/last-run.json` and
+  `.last-sync`, never runtime state such as the operation lock.
+
+### Fixed
+
+- `clearActiveRun` compared camelCase `runId` against the snake_case `run_id`
+  the host writes, stranding `active-run.json` after UI migrate/rollback/clear
+  and blocking every later sync with `operation-in-progress`.
+- Hybrid search ranked the raw lexical component by file-name order; it now
+  ranks by lexical score.
+- `memory_context` with a query keeps relevance order instead of re-sorting by
+  usage; the default active scope excludes superseded/archived records without
+  a query too.
+- Rollback refuses a dirty payload worktree (`rollback-dirty-worktree`) and
+  restores HEAD, index and payload if it fails after moving HEAD.
+- The memory prompt section is not template-expanded (`interpolate: false`,
+  braces neutralized), refreshes are generation-ordered (no duplicate or
+  resurrected section), and the absolute memory path is no longer in the prompt.
+  An empty `summary.md` yields a short notice instead of an empty snapshot.
+- `memory_search`/`memory_context` return `memory-disabled` while memory is off,
+  bound `limit` to 1–20 with an integer schema, constrain `scope` to an enum,
+  and omit ranking internals and hashes from model-facing output.
+
+### Tests and tooling
+
+- `run-memory-tests.sh` runs every suite and reports all failures; the runtime
+  test checks module behavior instead of exact source text.
+- New: host contract, ranking, generation discovery, desktop CLI resolution.
+- `test:desktop-compat` loads the plugins against a real desktop dependency
+  graph (`DSH_DESKTOP_NODE_MODULES`); CI runs runtime contracts for 0.1.5-rc.1
+  and 0.2.0-rc.2, with cordis/schemastery taken from that release's metadata.
+- `npm test` fails on marketplace bundle drift.
+
+### Earlier unreleased compatibility work
+
+- Verify Host and client entry points against DSH desktop 0.1.7-rc.1; remove the legacy client-runtime injection from the memory UI.
 - Adapt Host entry points and peer ranges to DSH 0.1.5-rc.1.
 - Add real-runtime import coverage while retaining legacy tests.
 - Scan V3 sessions without duplicate V2 processing; fence pending generation changes.
 
-All notable changes to this project are documented here.
 
 ## [0.9.3] - 2026-09-20
 

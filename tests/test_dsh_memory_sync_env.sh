@@ -42,6 +42,11 @@ set -euo pipefail
 [[ "$#" -eq 5 && "$1" == "--profile" && "$2" == "headless" && "$3" == "--patch" && -f "$4" && -n "$5" ]]
 grep -q -- '^- id: session-persistence-jsonl$' "$4"
 grep -q -- 'headless-sessions' "$4"
+# DSH 0.2 ignores DSH_PERMISSION_MODE; the overlay must pin the sandbox to the
+# staging workspace whatever the headless profile itself configures.
+grep -q -- '^- id: sandbox-policy$' "$4"
+grep -q -- '^    mode: workspace-write$' "$4"
+[[ "$(/usr/bin/awk '/^    workspaceRoot:/{print $2; exit}' "$4")" == "$(pwd -P)" ]]
 [[ "$4" != "$DSH_HOME/sessions" ]]
 print -r -- "$5" > "$HOME/prompt.txt"
 [[ "$5" == *"summary.md"*"12 KiB"* ]]

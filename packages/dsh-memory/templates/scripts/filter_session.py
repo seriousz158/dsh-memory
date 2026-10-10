@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Filter a DSH session log into a compact, redacted markdown transcript.
 
+Accepts any session log generation (session.jsonl, session.v3.jsonl.zstd,
+desktop 0.2's session.v4.jsonl.zstd, ...): compression is detected from the
+content, not the file name, and unknown event types are ignored.
+
 Usage:
   python3 filter_session.py <session.jsonl.zstd> [> transcript.md]
   zstd -dc <session.jsonl.zstd> | python3 filter_session.py -
