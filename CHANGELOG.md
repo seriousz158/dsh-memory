@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [0.10.0] - Unreleased
+## [0.10.0] - 2026-10-10
 
 ### DSH desktop 0.2
 
