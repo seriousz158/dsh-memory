@@ -156,11 +156,10 @@ export async function buildSearchIndex(root, records, stamp, warnings = []) {
     }
     for (const warning of warnings) insertWarning.run(warning.path, warning.code);
     db.exec("COMMIT");
-    db.exec(`
-      INSERT INTO meta(key, value) VALUES ('schema_version', '${SEARCH_INDEX_SCHEMA_VERSION}');
-      INSERT INTO meta(key, value) VALUES ('stamp', '${stamp.replaceAll("'", "''")}');
-      INSERT INTO meta(key, value) VALUES ('built_at', '${new Date().toISOString()}');
-    `);
+    const insertMeta = db.prepare("INSERT INTO meta(key, value) VALUES (?, ?)");
+    insertMeta.run("schema_version", String(SEARCH_INDEX_SCHEMA_VERSION));
+    insertMeta.run("stamp", stamp);
+    insertMeta.run("built_at", new Date().toISOString());
     db.close();
     db = undefined;
     await chmod(temporary, 0o600);
