@@ -5,7 +5,20 @@ PROJECT_DIR="$(cd -- "$(dirname -- "$0")/.." && pwd -P)"
 HOST="$PROJECT_DIR/packages/dsh-memory/lib/index.js"
 PACKAGE="$PROJECT_DIR/packages/dsh-memory/package.json"
 
-command -v rg >/dev/null 2>&1 || { print -u2 -- 'dsh-memory runtime tests require rg'; exit 1; }
+# Forbidden-pattern guard: POSIX grep -E is always present (CI runners lack
+# rg). Exit 1 means "no match"; any other non-zero status is a grep error and
+# must fail the test instead of silently passing the guard.
+forbid_pattern() {
+  local pattern="$1" message="$2" rc=0
+  grep -Eq -- "$pattern" "$HOST" || rc=$?
+  if (( rc == 0 )); then
+    print -u2 -- "$message"
+    exit 1
+  elif (( rc != 1 )); then
+    print -u2 -- "dsh-memory runtime: grep failed ($rc) for pattern: $pattern"
+    exit 1
+  fi
+}
 
 # Behavioral module contract instead of exact source text: refactors that keep
 # the exported surface intact must not break this test.
@@ -29,14 +42,11 @@ grep -Fq -- 'SUMMARY_INJECT_MAX_BYTES' "$HOST"
 grep -Fq -- 'safe-clear.py' "$HOST"
 grep -Fq -- 'unsafe-layout' "$HOST"
 grep -Fq -- 'checkpoint-failed' "$HOST"
-if rg -q -- '\.zcode|browser(?:Path|Root)|request\.(?:path|root)|request\["(?:path|root)"\]' "$HOST"; then
-  print -u2 -- 'dsh-memory host exposes a forbidden legacy or browser-selected path.'
-  exit 1
-fi
-if rg -q -- 'git\(\["(rm|restore)' "$HOST"; then
-  print -u2 -- 'dsh-memory clear must not mutate the working tree through git rm or git restore.'
-  exit 1
-fi
+forbid_pattern '\.zcode|browser(Path|Root)|request\.(path|root)|request\["(path|root)"\]' \
+  'dsh-memory host exposes a forbidden legacy or browser-selected path.'
+forbid_pattern 'git\(\["(rm|restore)' \
+  'dsh-memory clear must not mutate the working tree through git rm or git restore.'
+
 
 node -e '
 const p=require(process.argv[1]);
