@@ -1,6 +1,6 @@
 {
   "name": "dsh-git-memory",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "private": false,
   "description": "A local Git-backed long-term memory bundle for DeepSeek Harness",
   "type": "module",
@@ -27,9 +27,10 @@
     "test:public-tree": "zsh tests/test_public_tree.sh",
     "test:memory": "zsh tests/run-memory-tests.sh",
     "test:guards": "zsh tests/test_release_guards.sh",
-    "test": "npm run scan:secrets && npm run test:public-tree && npm run test:memory && npm run test:guards && npm run test:runtime-imports && npm run test:desktop-compat",
+    "test": "npm run scan:secrets && npm run test:bundle-sync && npm run test:public-tree && npm run test:memory && npm run test:guards && npm run test:runtime-imports && npm run test:desktop-compat",
     "test:runtime-imports": "node tests/test_dsh_runtime_imports.mjs",
-    "test:desktop-compat": "node tests/test_dsh_desktop_compat.mjs"
+    "test:desktop-compat": "node tests/test_dsh_desktop_compat.mjs",
+    "test:bundle-sync": "node tools/sync-marketplace-bundle.mjs --check"
   },
   "main": "./packages/dsh-git-memory/lib/index.js",
   "exports": {
@@ -69,19 +70,21 @@
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-api-remotes",
-        "@deepseek-ai/dsh-client-ui-settings"
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots"
       ],
       "platform": "web"
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-api-remotes": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1",
-    "@deepseek-ai/dsh-client-connection": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1",
-    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1",
-    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1",
+    "@deepseek-ai/dsh-api-remotes": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || >=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-client-connection": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || >=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || >=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || >=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || >=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || >=0.2.0-rc.2 <0.3.0",
     "@deepseek-ai/schemastery": "^3.18.1",
-    "react": "^18.2.0"
+    "react": "^18.2.0",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.6 || 0.1.5-rc.1 || 0.1.7-rc.1 || >=0.2.0-rc.2 <0.3.0"
   }
 }

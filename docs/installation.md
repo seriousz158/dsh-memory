@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- DSH `0.1.0-rc.7` (recommended and tested)
+- DSH desktop app `0.2.0-rc.2` (0.2.x), or the DSH web runtime `0.1.0-rc.7`
 - Node.js 22.x
 - Python 3.11.x
 - Git available on `PATH`
@@ -19,7 +19,39 @@ cd dsh-memory
 npm ci --ignore-scripts
 ```
 
-## Install into DSH
+## DSH desktop app (0.2.x)
+
+The desktop app (`/Applications/DeepSeek Harness.app`, DSH `0.2.0-rc.2` and
+later 0.2.x) uses the `desktop` profile under `~/.dsh/profiles/desktop`. Only
+packages listed in that profile's `dsh.profile.bundles` are activated; a plain
+`file:` dependency is installed but never loaded. Install the aggregate bundle
+through the plugin manager so it lands in `bundles`:
+
+```zsh
+DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
+"$DSH" plugin --profile desktop add /absolute/path/to/dsh-memory
+```
+
+Rules for the desktop profile:
+
+- Install **either** the aggregate `dsh-git-memory` bundle (recommended; it
+  ships its own settings client) **or** the split `dsh-memory` +
+  `dsh-memory-ui` pair, never both: two clients mounting the same `memory`
+  remote fail with "already mounted".
+- The app is usually started from Finder or the Dock, which do not pass shell
+  exports. Keep the memory repository at the default
+  `~/.dsh/storages/memory`; do not rely on `DSH_MEMORY_ROOT` for the app.
+- `memory.enabled` is a live (volatile) setting: toggling Settings → 长期记忆
+  takes effect for the next model call without a restart. It is stored as the
+  `memory` entry's config in `~/.dsh/profiles/desktop/cordis.patch.yml`, and the
+  scheduled synchronizer honors it there.
+- The settings `settings.yaml` of older DSH homes is imported once by the app
+  and renamed to `settings.yaml.imported`.
+
+For the scheduled synchronizer on desktop, see [Optional scheduled sync](#optional-scheduled-sync):
+it finds the app's bundled CLI automatically when `dsh` is not on `PATH`.
+
+## Install into DSH (web runtime 0.1.x)
 
 ### Public bundle
 
@@ -97,7 +129,22 @@ you use custom values, replace **both** assignments in the template before
 loading it: a LaunchAgent does not reliably inherit the one-time shell exports
 used during installation.
 
-The sync command does not install DSH. It requires a `dsh` executable on `PATH`, or a deliberately configured `DSH_BIN`. It performs no work while `memory.enabled` is false.
+The sync command does not install DSH. It uses, in order: an explicit
+`DSH_BIN` (never second-guessed), a `dsh` executable on `PATH`, then the CLI
+bundled with the desktop app (`$DSH_APP_BUNDLE`, default
+`/Applications/DeepSeek Harness.app`, then `~/Applications`). It performs no
+work while `memory.enabled` is false, whether that value comes from the desktop
+profile patch or from a legacy `settings.yaml`.
+
+Session discovery accepts every session-log generation (`session.jsonl`,
+`session.v3.jsonl.zstd`, desktop 0.2's `session.v4.jsonl.zstd`, …) and delivers
+only the newest generation of each session. It skips sessions whose
+`session.lock` is still held by a running DSH process (checked with `lsof`),
+the synchronizer's own staging sessions, and throwaway working directories
+under the system temp locations (set
+`DSH_MEMORY_SYNC_INCLUDE_TMP=1` to include the latter). Every real run writes a
+metadata-only `.sync/heartbeat.json` (time, exit code, candidate count) so a
+health check can distinguish an idle synchronizer from a stalled one.
 The wrapper also discovers a local Homebrew or nvm Node runtime when launchd
 starts with a minimal `PATH`; no interactive shell profile is required.
 

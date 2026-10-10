@@ -458,8 +458,9 @@ def recover_active(root):
                 os.close(sync_fd)
     finally:
         os.close(root_fd)
-    git(root, ["add", "--", ".sync"])
-    git(root, ["commit", "-m", f"DPSK memory journal: {record['run_id']}", "--", ".sync"])
+    paths = journal_paths(root, record["run_id"])
+    git(root, ["add", "--", *paths])
+    git(root, ["commit", "-m", f"DPSK memory journal: {record['run_id']}", "--", *paths])
     return {"recovered": True, "record": record}
 
 
@@ -1326,6 +1327,14 @@ def write_finalize_failure(root, run_id=None, candidate_digest=None):
         os.close(root_fd)
 
 
+def journal_paths(root, run_id, *extra):
+    """Journal files to commit. Runtime state under .sync (operation lock,
+    active run, pending candidates, heartbeat) is never staged, even when
+    .sync/.gitignore is missing."""
+    candidates = [f".sync/runs/{run_id}.json", ".sync/last-run.json", *extra]
+    return [path for path in candidates if os.path.lexists(os.path.join(root, path))]
+
+
 def journal_entry(root_fd, run_id, operation, status, started_at, finished_at,
                   candidate_sessions=0, processed_sessions=0, skipped_sessions=0,
                   changed_paths=None, recovery_commit=None, apply_commit=None,
@@ -1392,8 +1401,9 @@ def finalize(root, run_id, record, last_sync_ts):
                       rejected_candidate_count=record.get("rejected_candidate_count", 0))
     finally:
         os.close(root_fd)
-    git(root, ["add", "--", ".sync", ".last-sync"])
-    git(root, ["commit", "-m", f"DPSK memory journal: {run_id}", "--", ".sync", ".last-sync"])
+    paths = journal_paths(root, run_id, ".last-sync")
+    git(root, ["add", "--", *paths])
+    git(root, ["commit", "-m", f"DPSK memory journal: {run_id}", "--", *paths])
     return git(root, ["rev-parse", "HEAD"]).decode("ascii", "strict").strip()
 
 

@@ -29,6 +29,10 @@ const allowed = new Set([
   "tests/test_dsh_runtime_imports.mjs",
   "tests/test_dsh_desktop_compat.mjs",
   "tests/test_dsh_memory_sync_v3.py",
+  "tests/test_dsh_memory_sync_generations.py",
+  "tests/test_dsh_memory_sync_desktop_bin.sh",
+  "tests/test_dsh_memory_host_contract.mjs",
+  "tests/test_dsh_memory_ranking.mjs",
   ".github/dependabot.yml",
   ".github/ISSUE_TEMPLATE/bug.yml",
   ".github/ISSUE_TEMPLATE/feature.yml",
@@ -254,9 +258,9 @@ try {
     }
 
     const expectedManifestVersions = {
-      "package.json": "0.9.3",
-      "packages/dsh-memory/package.json": "0.9.3",
-      "packages/dsh-memory-ui/package.json": "0.9.3",
+      "package.json": "0.10.0",
+      "packages/dsh-memory/package.json": "0.10.0",
+      "packages/dsh-memory-ui/package.json": "0.10.0",
     };
     for (const manifestPath of Object.keys(expectedManifestVersions)) {
       const content = readSnapshotText(snapshot, manifestPath);

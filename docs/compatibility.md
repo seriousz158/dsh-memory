@@ -8,8 +8,11 @@ by the repository's test and integration work.
 
 | Component | Declared range | Verified |
 | --- | --- | --- |
-| `@deepseek-ai/dsh` (host plugin peer) | `^0.1.0-rc.6` | rc.6 and rc.7 |
-| `@deepseek-ai/dsh-client-*` (UI peer) | `^0.1.0-rc.6` | rc.7 |
+| `@deepseek-ai/dsh-*` (host plugin peers) | `^0.1.0-rc.6 \|\| 0.1.5-rc.1 \|\| 0.1.7-rc.1 \|\| >=0.2.0-rc.2 <0.3.0` | rc.6, rc.7, 0.1.5-rc.1, 0.2.0-rc.2 |
+| `@deepseek-ai/dsh-client-*` (UI peers) | same range | rc.7, 0.2.0-rc.2 |
+
+DSH 0.2 evaluates plugin peers with prereleases included, so the 0.2 range
+admits later 0.2 release candidates and 0.2.x releases without a new pin.
 
 ## Verified environments
 
@@ -38,9 +41,32 @@ by the repository's test and integration work.
 
 | Tool | DSH version used by default | Notes |
 | --- | --- | --- |
-| `dsh-memory-sync` | PATH `dsh` or `DSH_BIN` | Prefers the pinned project-local runtime when present |
+| `dsh-memory-sync` | `DSH_BIN`, PATH `dsh`, then the desktop app's bundled CLI | Honors the desktop profile's `memory.enabled` |
 | `dsh-memory-backup` | none (pure Git) | `git bundle` export/import |
 | `dsh-memory-migrate` | none (pure Node) | Front matter migration |
+
+## DSH desktop 0.2.0-rc.2
+
+Verified by `test:desktop-compat` against the real 0.2.0-rc.2 dependency graph
+(`DSH_DESKTOP_NODE_MODULES`; CI installs it with
+`tools/install-dsh-contract-deps.mjs 0.2.0-rc.2`):
+
+- the app's own `evaluatePluginCompatibility` accepts all three manifests;
+- `Config` is exported and `memory.enabled` is a volatile field, so
+  `SettingsForms` projects it and edits apply live via `loader/volatile-update`;
+  writes go to `SettingsForms.update(<profile entry id>, patch)`. Without any
+  settings backend a write fails with `settings-unavailable` instead of
+  reporting success;
+- the memory prompt section is registered with `interpolate: false` (and its
+  untrusted summary has `{{`/`}}` broken up for hosts that always interpolate),
+  so summary text can neither break prompt rendering nor be template-expanded;
+- the host contract suite (settings backends, refresh ordering, tool gating)
+  passes on 0.2's cordis, tools and typert packages.
+
+Session logs: the synchronizer selects the highest `session.v<N>.jsonl[.zstd]`
+generation per session directory (generation 0 is `session.jsonl`). A pending,
+incomplete delivery of an older generation next to a newer one fails closed with
+`session-generation-changed` (exit 78), as the V2→V3 rule below did.
 
 ## DSH 0.1.5-rc.1 and 0.1.7-rc.1
 

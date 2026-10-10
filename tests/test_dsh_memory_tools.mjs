@@ -39,16 +39,6 @@ Tool registration fixture for memory context.
   const registered = [];
   const sections = [];
   const context = new Context();
-  context.settings = {
-    register() {
-      const state = { enabled: true };
-      return {
-        get: () => state,
-        watch: () => () => {},
-        update: async (patch) => Object.assign(state, patch),
-      };
-    },
-  };
   context.tools = { register: (definition) => registered.push(definition) };
   context.inject = (dependencies, callback) => {
     if (dependencies[0] === "systemPrompt") {

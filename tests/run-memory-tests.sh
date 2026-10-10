@@ -8,36 +8,52 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
 }
 cd "$repo_root"
 
-node tests/test_dsh_memory_repository.mjs
-node tests/test_dsh_memory_migration_api.mjs
-node tests/test_dsh_memory_sync_transaction.mjs
-node tests/test_dsh_memory_operation_lock.mjs
-node tests/test_dsh_memory_metadata.mjs
-node tests/test_dsh_memory_usage.mjs
-node tests/test_dsh_memory_context.mjs
-node tests/test_dsh_memory_retrieval_eval.mjs
-node tests/test_dsh_memory_tools.mjs
-node tests/test_dsh_memory_marketplace.mjs
-python3 tests/test_dsh_memory_sync_failures.py
-python3 tests/test_dsh_memory_sync_v3.py
-node tests/test_dsh_memory_paths.mjs
-node tests/test_dsh_memory_preview.mjs
-node tests/test_dsh_memory_redaction.mjs
-zsh tests/test_dsh_memory_runtime.sh
-zsh tests/test_dsh_memory_ui_settings_row.sh
-zsh tests/test_dsh_memory_init.sh
-zsh tests/test_dsh_memory_install.sh
-zsh tests/test_dsh_memory_sync_disabled.sh
-zsh tests/test_dsh_memory_sync_env.sh
-zsh tests/test_dsh_memory_sync_zstd_failure.sh
-zsh tests/test_dsh_memory_sync_dry_run.sh
-zsh tests/test_dsh_memory_sync_lock.sh
-zsh tests/test_dsh_memory_sync_batch.sh
-zsh tests/test_dsh_memory_sync_chunks.sh
-zsh tests/test_dsh_memory_sync_preview.sh
-zsh tests/test_dsh_memory_sync_no_change.sh
-zsh tests/test_dsh_memory_backup.sh
-zsh tests/test_dsh_memory_migrate.sh
+# Run every test even when one fails, so a single regression cannot hide
+# later suites; the summary lists each failure and the exit code reflects it.
+typeset -a tests failures
+tests=(
+  'node tests/test_dsh_memory_repository.mjs'
+  'node tests/test_dsh_memory_migration_api.mjs'
+  'node tests/test_dsh_memory_sync_transaction.mjs'
+  'node tests/test_dsh_memory_operation_lock.mjs'
+  'node tests/test_dsh_memory_metadata.mjs'
+  'node tests/test_dsh_memory_usage.mjs'
+  'node tests/test_dsh_memory_context.mjs'
+  'node tests/test_dsh_memory_retrieval_eval.mjs'
+  'node tests/test_dsh_memory_ranking.mjs'
+  'node tests/test_dsh_memory_tools.mjs'
+  'node tests/test_dsh_memory_host_contract.mjs'
+  'node tests/test_dsh_memory_marketplace.mjs'
+  'python3 tests/test_dsh_memory_sync_failures.py'
+  'python3 tests/test_dsh_memory_sync_v3.py'
+  'python3 tests/test_dsh_memory_sync_generations.py'
+  'node tests/test_dsh_memory_paths.mjs'
+  'node tests/test_dsh_memory_preview.mjs'
+  'node tests/test_dsh_memory_redaction.mjs'
+  'zsh tests/test_dsh_memory_runtime.sh'
+  'zsh tests/test_dsh_memory_ui_settings_row.sh'
+  'zsh tests/test_dsh_memory_init.sh'
+  'zsh tests/test_dsh_memory_install.sh'
+  'zsh tests/test_dsh_memory_sync_disabled.sh'
+  'zsh tests/test_dsh_memory_sync_env.sh'
+  'zsh tests/test_dsh_memory_sync_desktop_bin.sh'
+  'zsh tests/test_dsh_memory_sync_zstd_failure.sh'
+  'zsh tests/test_dsh_memory_sync_dry_run.sh'
+  'zsh tests/test_dsh_memory_sync_lock.sh'
+  'zsh tests/test_dsh_memory_sync_batch.sh'
+  'zsh tests/test_dsh_memory_sync_chunks.sh'
+  'zsh tests/test_dsh_memory_sync_preview.sh'
+  'zsh tests/test_dsh_memory_sync_no_change.sh'
+  'zsh tests/test_dsh_memory_backup.sh'
+  'zsh tests/test_dsh_memory_migrate.sh'
+)
+failures=()
+for test_cmd in "${tests[@]}"; do
+  if ! eval "$test_cmd"; then
+    failures+=("$test_cmd")
+    print -u2 -- "FAILED: $test_cmd"
+  fi
+done
 
 # Browser E2E against an isolated DSH profile. Requires the Python Playwright
 # installation used for browser acceptance; skipped (exit 0) when unavailable.
@@ -60,6 +76,13 @@ with sync_playwright() as playwright:
 PROBE
 then
   print -u2 -- "dsh-memory e2e: Playwright browser unavailable; skipping"
-else
-  python3 tests/test_dsh_memory_e2e_ui.py
+elif ! python3 tests/test_dsh_memory_e2e_ui.py; then
+  failures+=("python3 tests/test_dsh_memory_e2e_ui.py")
 fi
+
+if (( ${#failures} > 0 )); then
+  print -u2 -- "memory tests: ${#failures} failed:"
+  print -u2 -l -- "  ${^failures[@]}"
+  exit 1
+fi
+print -- "memory tests: all ${#tests} suites passed"

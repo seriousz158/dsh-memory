@@ -102,7 +102,10 @@ export async function clearActiveRun(root, runId = undefined) {
   const directory = await ensureSyncDirectory(root);
   const path = join(directory, ACTIVE_FILE);
   const existing = await readJson(path);
-  if (existing !== null && runId !== undefined && existing.runId !== runId) return false;
+  // Active runs are written as snake_case run_id (host and sync-apply.py);
+  // camelCase runId is accepted for records written by older builds.
+  const existingRunId = existing?.run_id ?? existing?.runId;
+  if (existing !== null && runId !== undefined && existingRunId !== runId) return false;
   await unlink(path).catch((error) => {
     if (error?.code !== "ENOENT") throw error;
   });
